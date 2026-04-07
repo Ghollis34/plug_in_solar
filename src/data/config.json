@@ -1,0 +1,14 @@
+{
+  "electricityPrice": 24.67,
+  "electricityPriceUnit": "p/kWh",
+  "electricityPriceSource": "Ofgem price cap Q2 2026",
+  "electricityPriceUpdated": "2026-04-01",
+  "co2PerKwh": 0.207,
+  "panelDegradation": 0.005,
+  "floorHeight": 2.7,
+  "pitchedRoofAddition": 2.0,
+  "defaultFloors": 2,
+  "maxWattage": 800,
+  "currency": "£",
+  "country": "UK"
+}

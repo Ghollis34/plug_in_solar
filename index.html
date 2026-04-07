@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SolarSpot — Find the Best Spot for Plug-In Solar in the UK</title>
+  <meta name="description" content="Analyse shadows, compare plug-in solar kits, and calculate your ROI. Free tool for UK homeowners and renters planning balcony or garden solar panels." />
+  <meta name="keywords" content="plug in solar, balcony solar, UK solar panels, shadow analysis, solar ROI calculator" />
+  <meta property="og:title" content="SolarSpot — UK Plug-In Solar Planner" />
+  <meta property="og:description" content="Find the perfect spot for your plug-in solar panels. Shadow analysis, kit comparison, and ROI calculator." />
+  <meta property="og:type" content="website" />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" />
+</head>
+<body>
+  <div id="app">
+    <header id="app-header">
+      <div class="header-inner">
+        <a href="/" class="logo" id="logo">
+          <span class="logo-icon">☀️</span>
+          <span class="logo-text">Solar<span class="logo-accent">Spot</span></span>
+        </a>
+        <nav class="header-nav" id="header-nav">
+          <button class="btn-reset" id="btn-start-over" style="display:none;">Start Over</button>
+        </nav>
+      </div>
+    </header>
+
+    <main id="wizard-container">
+      <div id="progress-bar" style="display:none;">
+        <div class="progress-track">
+          <div class="progress-fill" id="progress-fill"></div>
+        </div>
+        <div class="progress-steps" id="progress-steps"></div>
+      </div>
+      <div id="step-content"></div>
+    </main>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
