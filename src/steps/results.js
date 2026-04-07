@@ -1,5 +1,5 @@
 import Chart from 'chart.js/auto';
-import { getState } from '../utils/state.js';
+import { getState, setState } from '../utils/state.js';
 import { fetchSolarData, adjustForShadows } from '../utils/pvgis.js';
 import { calculateROI, formatCurrency, formatPayback } from '../utils/roi.js';
 import config from '../data/config.json';
@@ -76,6 +76,7 @@ async function calculateResults() {
   const selectedKit = getState('selectedKit');
   const sunAnalysis = getState('sunAnalysis');
   const spaces = getState('spaces') || [];
+  const selectedSpaceId = getState('selectedSpaceId');
 
   if (!location || !selectedKit) {
     showError('Missing location or kit selection.');
@@ -83,33 +84,43 @@ async function calculateResults() {
   }
 
   try {
-    // Get best space orientation/tilt
-    const bestSpace = sunAnalysis?.scores?.[0] || spaces[0] || {};
-    const orientation = bestSpace.orientation || 180;
-    // Convert orientation (0=N, 180=S) to PVGIS azimuth (-180 to 180, 0=south)
-    const pvgisAzimuth = orientation <= 180 ? orientation - 180 : orientation - 180;
-    const tilt = bestSpace.tilt || 35;
+    const rankedSpaces = sunAnalysis?.scores || [];
+    const selectedSpace = rankedSpaces.find((space) => space.id === selectedSpaceId)
+      || rankedSpaces[0]
+      || spaces.find((space) => space.id === selectedSpaceId)
+      || spaces[0]
+      || {};
+    const recommendedSpace = rankedSpaces[0] || selectedSpace;
+    const orientation = selectedSpace.orientation || 180;
+    const pvgisAzimuth = orientation - 180;
+    const tilt = selectedSpace.tilt || 35;
 
-    // Fetch PVGIS data
     const solarData = await fetchSolarData(location.lat, location.lng, tilt, pvgisAzimuth);
+    const baselineFactor = clamp(selectedSpace.shadowFactor ?? ((selectedSpace.avgDailyHours || 6) / 12), 0, 1);
+    const conservativeFactor = clamp(selectedSpace.conservativeFactor ?? (baselineFactor - 0.14), 0, 1);
+    const optimisticFactor = clamp(selectedSpace.optimisticFactor ?? (baselineFactor + 0.14), 0, 1);
 
-    // Calculate shadow factor
-    const maxPossibleHours = 12; // Approximate max daily sun hours in UK summer
-    const avgSunHours = bestSpace.avgDailyHours || 6;
-    const shadowFactor = Math.min(1, avgSunHours / maxPossibleHours);
+    const adjusted = adjustForShadows(solarData, baselineFactor, selectedKit.wattage);
+    const conservativeAdjusted = adjustForShadows(solarData, conservativeFactor, selectedKit.wattage);
+    const optimisticAdjusted = adjustForShadows(solarData, optimisticFactor, selectedKit.wattage);
 
-    // Adjust for shadows and kit wattage
-    const adjusted = adjustForShadows(solarData, shadowFactor, selectedKit.wattage);
-
-    // Calculate ROI
     const roi = calculateROI({
       kitCost: selectedKit.price,
       annualKwh: adjusted.annualKwh,
       warrantyYears: selectedKit.warrantyYears,
     });
 
-    // Display results
-    displayResults(roi, adjusted, bestSpace, selectedKit, solarData);
+    setState({
+      results: {
+        annualKwh: adjusted.annualKwh,
+        conservativeKwh: conservativeAdjusted.annualKwh,
+        optimisticKwh: optimisticAdjusted.annualKwh,
+        annualSavings: roi.annualSavingsYear1,
+        paybackYears: roi.paybackYears,
+      },
+    });
+
+    displayResults(roi, adjusted, conservativeAdjusted, optimisticAdjusted, selectedSpace, recommendedSpace, selectedKit, solarData);
 
   } catch (error) {
     console.error('Results calculation failed:', error);
@@ -117,32 +128,42 @@ async function calculateResults() {
   }
 }
 
-function displayResults(roi, adjusted, bestSpace, kit, solarData) {
-  // Hide loading, show content
+function displayResults(roi, adjusted, conservativeAdjusted, optimisticAdjusted, selectedSpace, recommendedSpace, kit, solarData) {
   document.getElementById('results-loading')?.classList.add('hidden');
   document.getElementById('results-content')?.classList.remove('hidden');
 
-  // Recommendation card
-  const compassDir = getCompassDirection(bestSpace.orientation || 180);
+  const compassDir = getCompassDirection(selectedSpace.orientation || 180);
+  const warningsHtml = (selectedSpace.warnings || [])
+    .map(warning => `<div style="font-size: 0.82rem; color: var(--text-secondary);">${warning}</div>`)
+    .join('');
+  const selectionNote = selectedSpace.id && recommendedSpace.id && selectedSpace.id !== recommendedSpace.id
+    ? `<div style="font-size: 0.82rem; color: var(--text-secondary); margin-top: 8px;">ROI is using your chosen spot, <strong>${selectedSpace.name}</strong>. The model still ranks <strong>${recommendedSpace.name}</strong> as the strongest sun location.</div>`
+    : '';
+
   document.getElementById('recommendation-card').innerHTML = `
     <h3>⭐ Our Recommendation</h3>
     <p class="recommendation-text">
       Put your <strong>${kit.name}</strong> on your 
-      <strong>${bestSpace.name || 'selected spot'}</strong> 
-      facing <strong>${compassDir}</strong> at <strong>${bestSpace.tilt || 35}°</strong> tilt.
-      ${bestSpace.avgDailyHours ? `This spot gets an average of <strong>${bestSpace.avgDailyHours} hours</strong> of direct sunlight per day.` : ''}
-      You'll generate approximately <strong>${roi.annualKwhYear1} kWh</strong> in the first year, 
-      saving <strong>${formatCurrency(roi.annualSavingsYear1)}</strong> annually.
+      <strong>${selectedSpace.name || 'selected spot'}</strong> 
+      facing <strong>${compassDir}</strong> at <strong>${selectedSpace.tilt || 35}°</strong> tilt.
+      ${selectedSpace.avgDailyHours ? `This spot gets an average of <strong>${selectedSpace.avgDailyHours} hours</strong> of direct sunlight per day.` : ''}
+      The modelled first-year output is <strong>${roi.annualKwhYear1} kWh</strong>, with a more honest expected range of
+      <strong>${conservativeAdjusted.annualKwh}-${optimisticAdjusted.annualKwh} kWh/year</strong>.
     </p>
+    <div class="badge-row" style="margin: 14px 0 10px;">
+      <span class="info-badge">Confidence: ${capitalise(selectedSpace.confidence || 'medium')}</span>
+      <span class="info-badge">Shadow factor: ${Math.round((selectedSpace.shadowFactor || adjusted.shadowFactor) * 100)}%</span>
+    </div>
+    ${warningsHtml}
+    ${selectionNote}
   `;
 
-  // Key metrics
   document.getElementById('results-grid').innerHTML = `
     <div class="card result-card">
       <div class="result-icon">⚡</div>
-      <div class="result-value accent" id="counter-kwh">${roi.annualKwhYear1}</div>
+      <div class="result-value accent" id="counter-kwh">${conservativeAdjusted.annualKwh}-${optimisticAdjusted.annualKwh}</div>
       <div class="result-label">kWh / year</div>
-      <div class="result-sublabel">First year generation</div>
+      <div class="result-sublabel">Conservative to optimistic</div>
     </div>
     <div class="card result-card">
       <div class="result-icon">💰</div>
@@ -170,18 +191,26 @@ function displayResults(roi, adjusted, bestSpace, kit, solarData) {
     </div>
     <div class="card result-card">
       <div class="result-icon">☀️</div>
-      <div class="result-value accent">${bestSpace.avgDailyHours || '~6'}h</div>
+      <div class="result-value accent">${selectedSpace.avgDailyHours || '~6'}h</div>
       <div class="result-label">Daily Sun Hours</div>
-      <div class="result-sublabel">Average at best spot</div>
+      <div class="result-sublabel">Average at chosen spot</div>
+    </div>
+    <div class="card result-card">
+      <div class="result-icon">🧭</div>
+      <div class="result-value accent">${capitalise(selectedSpace.confidence || 'medium')}</div>
+      <div class="result-label">Confidence</div>
+      <div class="result-sublabel">${selectedSpace.relativeDirectionLabel || 'Position estimated'}</div>
     </div>
   `;
 
-  // Animate counters
   animateCounters();
-
-  // Charts
   renderMonthlyChart(adjusted, solarData);
   renderSavingsChart(roi);
+
+  document.getElementById('price-disclaimer').textContent = `
+    Based on ${config.electricityPriceSource}: ${config.electricityPrice}${config.electricityPriceUnit}. Solar irradiance data from EU PVGIS.
+    Shadow results use a simplified obstacle model and are shown as a range because trees, fences, and assumed building footprints remain approximate.
+  `;
 }
 
 function renderMonthlyChart(adjusted, solarData) {
@@ -330,6 +359,14 @@ function getCompassDirection(deg) {
   const dirs = ['North', 'North-East', 'East', 'South-East', 'South', 'South-West', 'West', 'North-West'];
   const idx = Math.round(deg / 45) % 8;
   return dirs[idx];
+}
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function capitalise(value) {
+  return `${value.charAt(0).toUpperCase()}${value.slice(1)}`;
 }
 
 export function cleanup() {

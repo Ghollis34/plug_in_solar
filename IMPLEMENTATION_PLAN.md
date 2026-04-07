@@ -2,159 +2,233 @@
 
 ## Problem
 
-The shadow analysis gives **misleading results**. For a spot on the north side of a house in Cambridge, it reported "12h sun/day" when in reality the house itself blocks the sun for most of the day and the back fence blocks evening sun.
+The current shadow analysis can overstate direct sunlight because it only applies a simplified building-shadow heuristic and ignores nearby obstacles. A spot on the north side of a building can currently rank far too well, which leads to overconfident advice and inflated generation estimates.
 
 ### Root Causes
-1. **Building shadow not properly applied** — building position is nearly identical to the marked spot
-2. **No obstacle support** — fences (1.8m), trees, walls, sheds are invisible
-3. **No directional awareness** — a north-of-building spot should be heavily penalised at UK latitudes
-4. **Overconfident output** — "12h/day" with no uncertainty or warnings
+1. Building self-shading is modelled as a radius, not an oriented footprint.
+2. Fences, trees, and small structures are not part of the analysis contract.
+3. Results do not explain why a space was penalised or how confident the estimate is.
+4. The current implementation duplicates map setup logic across steps, which makes satellite/overlay work likely to drift.
 
 ---
 
-## Proposed Changes
+## Scope
 
-### 1. Satellite Imagery Layer (All Map Steps)
+### 1. Shared Map Bootstrap + Satellite Toggle
 
-**Source**: ESRI World Imagery — `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}`
+**Provider**: ESRI World Imagery tiles, used as a configurable raster basemap for the app prototype.
 
-No API key needed. Free for non-commercial/development use. Requires attribution: "Powered by Esri — Sources: Esri, Maxar, Earthstar Geographics".
+Notes:
+- No API key is required for the current tile endpoint.
+- Use this behind a shared helper, not as a hard-coded production guarantee.
+- Keep attribution accurate and configurable.
+- Street view remains the default because it supports 3D buildings and lighting.
 
-#### [MODIFY] [location.js](file:///c:/Users/gholl/Documents/plug_in_solar/src/steps/location.js)
-#### [MODIFY] [building-heights.js](file:///c:/Users/gholl/Documents/plug_in_solar/src/steps/building-heights.js)
-#### [MODIFY] [mark-space.js](file:///c:/Users/gholl/Documents/plug_in_solar/src/steps/mark-space.js)
-#### [MODIFY] [shadow-analysis.js](file:///c:/Users/gholl/Documents/plug_in_solar/src/steps/shadow-analysis.js)
+#### [MODIFY] `src/utils/map-helpers.js`
+Create the shared map bootstrap used by all map steps:
+- initialise common MapLibre settings
+- add 3D buildings once
+- add satellite raster source/layer once
+- add a reusable street/satellite toggle control
+- add reusable overlay helpers for spaces, obstacles, and building footprint previews
 
-Add a **map style toggle** button (top-right corner) to every map step:
-- 🗺️ **Street** (default OpenFreeMap bright style — shows 3D buildings)
-- 🛰️ **Satellite** (ESRI raster imagery)
+#### [MODIFY] `src/steps/location.js`
+Use shared map bootstrap and show the map-style toggle here.
 
-When satellite is active, users can see their actual property, fences, trees, sheds etc.
+#### [MODIFY] `src/steps/building-heights.js`
+Use shared map bootstrap and show the map-style toggle here.
 
-> [!NOTE]
-> 3D building extrusions only work on the vector street style. When in satellite mode, buildings appear flat but the user can see actual roof shapes and fence lines clearly. Shadow analysis should still default to street view for the 3D lighting visualisation.
+#### [MODIFY] `src/steps/mark-space.js`
+Use shared map bootstrap and show the map-style toggle here.
+
+#### [MODIFY] `src/steps/shadow-analysis.js`
+Use shared map bootstrap and keep street mode as the default initial view for lighting playback.
 
 ---
 
-### 2. Draw Obstacles on Satellite View
+### 2. Explicit Data Model For Obstacles And Analysis
 
-#### [MODIFY] [mark-space.js](file:///c:/Users/gholl/Documents/plug_in_solar/src/steps/mark-space.js) — Major rework
+#### [MODIFY] `src/utils/state.js`
+Add state fields required by the new workflow:
 
-Rename step to **"Mark Spaces & Obstacles"**. Add two modes:
-
-**Mode A — Panel Locations** (existing, cleaned up):
-- Click on map to place a marker where panels could go
-- Set surface type, orientation, tilt
-
-**Mode B — Draw Obstacles** (new):
-- **Fence tool** — click two points on the map to draw a fence line. Set fence height (default 1.8m UK standard). The line is visible on both street and satellite views.
-- **Tree tool** — click to place a tree marker. Set trunk height (default 5m) and canopy radius (default 3m).
-- **Shed/Wall tool** — click to place a rectangular obstruction. Set height (default 2.5m).
-
-Each obstacle is drawn on the map as a coloured overlay:
-- Fences = orange dashed line
-- Trees = green circle
-- Sheds = grey rectangle
-
-Obstacles are saved to state in an `obstacles` array.
-
-#### [MODIFY] [state.js](file:///c:/Users/gholl/Documents/plug_in_solar/src/utils/state.js)
-Add `obstacles` to state shape:
 ```js
+buildings: [
+  {
+    id: 'user-building',
+    floors: 2,
+    pitched: true,
+    height: 7.7,
+    lat: 52.2,
+    lng: 0.1,
+    widthM: 5,
+    depthM: 9,
+    frontDoorFacing: null, // null means unknown
+  }
+],
 obstacles: [
-  { type: 'fence', points: [{lat, lng}, {lat, lng}], heightM: 1.8 },
-  { type: 'tree', lat, lng, heightM: 5, canopyRadiusM: 3 },
-  { type: 'shed', lat, lng, heightM: 2.5, widthM: 3, depthM: 2 },
-]
+  { id: 'obs-1', type: 'fence', points: [{ lat, lng }, { lat, lng }], heightM: 1.8 },
+  { id: 'obs-2', type: 'tree', lat, lng, heightM: 5, canopyRadiusM: 3 },
+  { id: 'obs-3', type: 'shed', lat, lng, widthM: 3, depthM: 2, rotationDeg: 0, heightM: 2.5 },
+],
+sunAnalysis: {
+  bestSpaceId: 'space-1',
+  scores: [
+    {
+      id: 'space-1',
+      avgDailyHours: 5.2,
+      shadowFactor: 0.62,
+      conservativeFactor: 0.54,
+      optimisticFactor: 0.69,
+      confidence: 'medium',
+      relativeToBuilding: 'north',
+      warningLevel: 'high',
+      warnings: ['North of building - heavy shading expected'],
+      breakdown: { morning: 'sun', midday: 'mixed', afternoon: 'shade' },
+      obstructionSummary: { building: 44, fence: 12, tree: 6 },
+    }
+  ],
+  date: '...'
+}
 ```
+
+Design rules:
+- `frontDoorFacing` starts as `null`, not a guessed default.
+- Every obstacle needs a stable `id`.
+- Rectangular obstacles need rotation if they are rendered or analysed as rectangles.
 
 ---
 
-### 3. Fix Shadow Calculation Engine
+### 3. Building Orientation Without Full Outline Drawing
 
-#### [MODIFY] [sun.js](file:///c:/Users/gholl/Documents/plug_in_solar/src/utils/sun.js) — Major rewrite
+#### [MODIFY] `src/steps/building-heights.js`
+Add a front-door direction selector:
+- 8-direction compass buttons: N, NE, E, SE, S, SW, W, NW
+- state can remain unknown until the user chooses
+- show a preview of the assumed building footprint on the map
 
-The key insight: at every 15-minute interval, for each panel spot, check whether **any obstruction** (building, fence, tree, shed) casts a shadow that covers that spot.
-
-**For buildings** (the user's house):
-- Model as a rectangle on the map at the geocoded location
-- Ask the user "which direction does your front door face?" to orient it (simpler than drawing the outline)
-- Use a standard UK house footprint: ~5m wide × 9m deep
-- Calculate shadow projection from the building rectangle along the sun's shadow vector
-
-**For fences** (drawn lines):
-- Model as a thin wall of configurable height
-- At each time step, project the fence line's shadow along the shadow direction
-- Check if the panel spot falls within the shadow strip (fence length × shadow length)
-
-**For trees** (point markers):
-- Model as a cylinder (trunk) with a sphere (canopy)
-- Shadow = elongated oval on the ground, dappled (partial shading, ~60-70% reduction)
-
-**For sheds** (rectangles):
-- Same approach as buildings but smaller
-
-**Algorithm per spot, per 15-min interval**:
-```
-1. Get sun position (altitude, azimuth) from SunCalc
-2. If sun below horizon → shaded
-3. For each obstruction:
-   a. Calculate shadow vector: direction = sun_azimuth + 180°
-   b. Calculate shadow length = height / tan(altitude)
-   c. Project obstruction footprint along shadow vector
-   d. Check if spot falls inside projection
-4. If any obstruction shadows the spot → that interval = shaded
-```
+Behaviour:
+- no hidden default of "south-facing front door"
+- if orientation is unknown, keep analysis conservative and mark confidence lower
 
 ---
 
-### 4. Better UX — Compass Warnings + Building Orientation
+### 4. Mark Spaces And Obstacles
 
-#### [MODIFY] [building-heights.js](file:///c:/Users/gholl/Documents/plug_in_solar/src/steps/building-heights.js)
+#### [MODIFY] `src/steps/mark-space.js`
+Rename to **Mark Spaces & Obstacles** and split the UI into two modes.
 
-Add a "Front door direction" selector (compass rose or 8-direction buttons: N, NE, E, SE, S, SW, W, NW). This tells us the building orientation so we can model its shadow footprint correctly.
+**Mode A - Panel Locations**
+- click to place candidate panel markers
+- set surface type, panel orientation, and tilt
 
-Default to **South-facing front door** (most common UK layout, meaning the back garden faces North).
+**Mode B - Obstacles**
+- fence tool: click two points, set height, save as line
+- tree tool: click once, set height and canopy radius
+- shed tool: click once to place a rectangular footprint, set size/height, allow rotation if kept in scope
 
-#### [MODIFY] [shadow-analysis.js](file:///c:/Users/gholl/Documents/plug_in_solar/src/steps/shadow-analysis.js)
+Rendering:
+- fences = orange dashed line
+- trees = green circle
+- sheds = grey footprint or labelled marker
 
-- Show **compass indicator** — "Your spot is [DIRECTION] of your building"
-- Show **warning badges**:
-  - 🔴 "North of building — heavy shading expected" 
-  - 🟡 "East of building — limited afternoon sun"
-  - 🟢 "South of building — best sun exposure"
-- Show **hourly breakdown**: Morning ☀️ | Midday ☀️ | Afternoon ⛅ for each spot
-- Show **confidence level**: Low (no obstacles drawn) / Medium / High (obstacles + building direction set)
+Implementation rule:
+- fences and trees are first-class MVP
+- sheds can ship as a simpler footprint if needed, but the stored schema must support later refinement
 
-#### [MODIFY] [results.js](file:///c:/Users/gholl/Documents/plug_in_solar/src/steps/results.js)
+---
 
-- Use actual shadow factor from analysis (not simplified ratio)
-- Show **conservative** and **optimistic** range: "290-410 kWh/year"
-- Include a disclaimer about the limitations of the shadow model
+### 5. Shadow Engine Rewrite
+
+#### [MODIFY] `src/utils/sun.js`
+Replace the current radius-based building test with footprint-aware obstruction checks.
+
+For each analysis interval:
+1. Get sun altitude and azimuth from SunCalc.
+2. Skip intervals where the sun is below the horizon.
+3. Build shadow geometry for each obstruction.
+4. Test whether the candidate panel point falls inside any resulting shadow.
+5. Record not just shaded/unshaded, but the obstruction type responsible.
+
+Objects:
+- user building = oriented rectangle using width/depth and front-door direction
+- fence = line segment extruded along shadow vector
+- tree = partial-shade obstacle with a lower weighting than full blockage
+- shed = small rectangle using width/depth/rotation
+
+Outputs:
+- `avgDailyHours`
+- `shadowFactor`
+- conservative and optimistic factors
+- morning/midday/afternoon breakdown
+- warnings based on relative building position and obstruction dominance
+- confidence based on orientation known, obstacle coverage, and simplifications still in use
+
+Implementation note:
+- keep geometry helpers small and pure so they can be unit-tested later
+- do not tie the engine to map rendering code
+
+---
+
+### 6. Honest Analysis UI
+
+#### [MODIFY] `src/steps/shadow-analysis.js`
+Show explanation, not just ranking:
+- building-relative direction for each space
+- warning badges
+- confidence level
+- morning / midday / afternoon breakdown
+- visible obstacle overlays on the map
+
+Examples:
+- high warning: `North of building - heavy shading expected`
+- medium warning: `East of building - limited afternoon sun`
+- positive signal: `South of building - strongest direct sun`
+
+---
+
+### 7. Results Based On Real Analysis Outputs
+
+#### [MODIFY] `src/steps/results.js`
+Use `shadowFactor`, `conservativeFactor`, and `optimisticFactor` from analysis instead of deriving shading from `avgDailyHours / 12`.
+
+Add:
+- conservative and optimistic annual generation range
+- confidence summary
+- warning summary for the recommended spot
+- disclaimer about model limitations
 
 ---
 
 ## Implementation Order
 
-1. **Satellite imagery toggle** — quick visual win, users can immediately see their property
-2. **Building orientation** — "front door direction" question in Building Heights step
-3. **Shadow engine rewrite** — proper geometric projection including building self-shading
-4. **Fence/obstacle drawing tools** — draw on satellite view
-5. **Compass warnings + honest output** — warning badges, confidence levels
-6. **Results improvements** — conservative/optimistic range
+1. Shared map bootstrap and reusable basemap toggle.
+2. State/schema updates for building orientation, obstacles, and richer `sunAnalysis`.
+3. Building orientation selector and footprint preview.
+4. Space + obstacle capture flow.
+5. Shadow engine rewrite using the new schema.
+6. Honest analysis UI and results integration.
+
+This order is deliberate: the geometry and analysis contract must exist before the UI can present trustworthy ranges, warnings, or confidence levels.
 
 ---
 
 ## Verification Plan
 
-### Test with 9 Chelwood Road, Cambridge
-1. Switch to satellite view — verify roof, fences, trees visible
-2. Set front door = South (typical UK terraced layout)
-3. Mark spot in back garden (north side) — should show ~3-5h/day with warning
-4. Mark spot in front garden (south side) — should show ~8-10h/day
-5. Draw back fence as obstacle — should reduce back garden score further
-6. Compare results: front vs back garden should have dramatically different recommendations
+### Automated / Deterministic Checks
+Add fixed geometry test cases for:
+1. panel point north of a south-facing building at midday
+2. fence casting a long winter-afternoon shadow
+3. tree partial shading reducing output less than full building blockage
+4. same point with unknown orientation yielding lower confidence than explicit orientation
 
-### Manual Verification
-- Cross-reference against [PVGIS Horizon Profile](https://re.jrc.ec.europa.eu/pvg_tools/en/)
-- Compare shadow patterns with Google Earth time-of-day shadows
+### Manual Smoke Test
+Use 9 Chelwood Road, Cambridge:
+1. switch to satellite view and verify the property context is visible
+2. set building height and front-door direction explicitly
+3. mark one point in the back garden and one in the front
+4. draw the rear fence
+5. confirm the rear point ranks materially lower and shows stronger warnings
+
+### Cross-Checks
+- use PVGIS as an irradiance baseline, not as a validation source for near-field obstacle shading
+- compare major shadow expectations against aerial imagery and known building orientation

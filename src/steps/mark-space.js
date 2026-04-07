@@ -1,74 +1,168 @@
 import maplibregl from 'maplibre-gl';
 import { getState, setState } from '../utils/state.js';
+import { degreesToCompass, getBearingBetweenPoints, latLngToMeters } from '../utils/geometry.js';
+import { samplePlacementHeatmap } from '../utils/sun.js';
+import { createStepMap, drawObstacles, drawSuitabilityHeatmap } from '../utils/map-helpers.js';
 
 let map = null;
-let drawingMode = false;
-let currentPolygon = [];
+let activeMode = 'space';
+let activeObstacleTool = 'fence';
+let pendingPlacement = null;
+let fenceStartPoint = null;
 let drawnSpaces = [];
+let drawnObstacles = [];
 let markers = [];
 let spaceCounter = 0;
+let obstacleCounter = 0;
+let selectedSpaceId = null;
+let heatmapRefreshHandle = null;
 
 const spaceTypes = [
   { id: 'railing', icon: '🏗️', label: 'Balcony Railing' },
   { id: 'wall', icon: '🧱', label: 'Wall Mount' },
-  { id: 'fence', icon: '🌳', label: 'Garden Fence' },
+  { id: 'fence', icon: '☀️', label: 'Fence Mount' },
   { id: 'flat-roof', icon: '🏠', label: 'Flat Roof / Shed' },
   { id: 'ground', icon: '🌿', label: 'Ground / Garden' },
+];
+
+const obstacleTools = [
+  { id: 'fence', label: 'Fence', icon: '🟧' },
+  { id: 'tree', label: 'Tree', icon: '🌳' },
+  { id: 'shed', label: 'Shed / Wall', icon: '⬜' },
 ];
 
 export function render() {
   return `
     <div class="step-page">
       <div class="step-header">
-        <h2 class="step-title">✏️ Mark Your Spaces</h2>
-        <p class="step-subtitle">Click on the map to mark areas where you could place solar panels</p>
+        <h2 class="step-title">✏️ Mark Spaces & Obstacles</h2>
+        <p class="step-subtitle">Place candidate panel spots, then draw the fences, trees, and structures that could block them.</p>
       </div>
 
       <div class="step-body full-width">
         <div class="map-container" id="spaces-map"></div>
 
         <div class="map-overlay-panel">
-          <h4 style="margin-bottom: 12px;">Add Panel Locations</h4>
-
-          <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 16px;">
-            Click on the map to mark spots where panels could go. Add at least one location to continue.
-          </p>
-
-          <div class="form-group mb-md">
-            <label class="form-label">Surface type</label>
-            <div class="space-type-grid">
-              ${spaceTypes.map(t => `
-                <button class="space-type-btn ${t.id === 'ground' ? 'active' : ''}" data-type="${t.id}" id="type-${t.id}">
-                  <span class="type-icon">${t.icon}</span>
-                  ${t.label}
-                </button>
-              `).join('')}
-            </div>
+          <div class="mode-switch mb-md">
+            <button class="mode-switch-btn active" data-mode="space">Panel Locations</button>
+            <button class="mode-switch-btn" data-mode="obstacle">Obstacles</button>
           </div>
 
-          <div class="form-group mb-md">
-            <label class="form-label">Panel direction (°from North)</label>
-            <div class="flex items-center gap-md">
-              <input type="range" class="range-slider" id="orientation-slider" 
-                     min="0" max="360" value="180" />
-              <span id="orientation-value" style="min-width: 50px; text-align: right; font-weight: 600;">180° S</span>
+          <div id="panel-mode-panel">
+            <h4 style="margin-bottom: 12px;">Add Panel Locations</h4>
+
+            <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 16px;">
+              Add at least one candidate panel spot. Each marker stores its own orientation and tilt, and the heatmap shows where direct sun is strongest around the property.
+            </p>
+
+            <div class="form-group mb-md">
+              <label class="form-label">Surface type</label>
+              <div class="space-type-grid">
+                ${spaceTypes.map((type) => `
+                  <button class="space-type-btn ${type.id === 'ground' ? 'active' : ''}" data-type="${type.id}">
+                    <span class="type-icon">${type.icon}</span>
+                    ${type.label}
+                  </button>
+                `).join('')}
+              </div>
             </div>
+
+            <div class="form-group mb-md">
+              <label class="form-label">Panel facing</label>
+              <div class="flex items-center gap-md">
+                <input type="range" class="range-slider" id="orientation-slider"
+                       min="0" max="360" value="180" />
+                <span id="orientation-value" style="min-width: 108px; text-align: right; font-weight: 600;">South (180°)</span>
+              </div>
+              <div class="analysis-note" id="orientation-note" style="margin-top: 8px;">
+                Pick the general facing if you know it. Fence-mounted panels will auto-align to a nearby drawn fence.
+              </div>
+            </div>
+
+            <div class="form-group mb-md">
+              <label class="form-label">Panel tilt (°)</label>
+              <div class="flex items-center gap-md">
+                <input type="range" class="range-slider" id="tilt-slider"
+                       min="0" max="90" value="35" />
+                <span id="tilt-value" style="min-width: 36px; text-align: right; font-weight: 600;">35°</span>
+              </div>
+            </div>
+
+            <button class="btn btn-primary w-full mb-md" id="btn-add-space">
+              📌 Place Panel Marker
+            </button>
           </div>
 
-          <div class="form-group mb-md">
-            <label class="form-label">Panel tilt (°)</label>
-            <div class="flex items-center gap-md">
-              <input type="range" class="range-slider" id="tilt-slider" 
-                     min="0" max="90" value="35" />
-              <span id="tilt-value" style="min-width: 36px; text-align: right; font-weight: 600;">35°</span>
+          <div id="obstacle-mode-panel" class="hidden">
+            <h4 style="margin-bottom: 12px;">Draw Obstacles</h4>
+
+            <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 16px;">
+              Use satellite view if it helps. Fences and trees affect the analysis directly; sheds use a simple rectangular footprint.
+            </p>
+
+            <div class="form-group mb-md">
+              <label class="form-label">Obstacle type</label>
+              <div class="direction-grid">
+                ${obstacleTools.map((tool) => `
+                  <button class="direction-chip ${tool.id === activeObstacleTool ? 'active' : ''}" data-obstacle-tool="${tool.id}">
+                    ${tool.icon} ${tool.label}
+                  </button>
+                `).join('')}
+              </div>
             </div>
+
+            <div class="obstacle-form ${activeObstacleTool === 'fence' ? '' : 'hidden'}" data-config-tool="fence">
+              <div class="form-group mb-md">
+                <label class="form-label">Fence height (m)</label>
+                <input type="number" class="form-input" id="fence-height" min="0.5" max="5" step="0.1" value="1.8" />
+              </div>
+            </div>
+
+            <div class="obstacle-form hidden" data-config-tool="tree">
+              <div class="form-group mb-md">
+                <label class="form-label">Tree height (m)</label>
+                <input type="number" class="form-input" id="tree-height" min="1" max="30" step="0.5" value="5" />
+              </div>
+              <div class="form-group mb-md">
+                <label class="form-label">Canopy radius (m)</label>
+                <input type="number" class="form-input" id="tree-radius" min="1" max="15" step="0.5" value="3" />
+              </div>
+            </div>
+
+            <div class="obstacle-form hidden" data-config-tool="shed">
+              <div class="form-group mb-md">
+                <label class="form-label">Height (m)</label>
+                <input type="number" class="form-input" id="shed-height" min="1" max="10" step="0.1" value="2.5" />
+              </div>
+              <div class="form-group mb-md">
+                <label class="form-label">Width (m)</label>
+                <input type="number" class="form-input" id="shed-width" min="1" max="20" step="0.5" value="3" />
+              </div>
+              <div class="form-group mb-md">
+                <label class="form-label">Depth (m)</label>
+                <input type="number" class="form-input" id="shed-depth" min="1" max="20" step="0.5" value="2" />
+              </div>
+              <div class="form-group mb-md">
+                <label class="form-label">Rotation (° from North)</label>
+                <input type="number" class="form-input" id="shed-rotation" min="0" max="359" step="5" value="0" />
+              </div>
+            </div>
+
+            <button class="btn btn-primary w-full mb-md" id="btn-place-obstacle">
+              🟧 Draw Fence
+            </button>
           </div>
 
-          <button class="btn btn-primary w-full mb-md" id="btn-add-space">
-            📌 Place Marker on Map
-          </button>
+          <div class="analysis-note mb-md" id="placement-status">
+            Choose a mode, then click the action button to place items on the map.
+          </div>
+
+          <div class="analysis-note mb-md">
+            Heatmap guide: green = strongest direct sun, amber = mixed, red = weakest. It updates when you add or remove obstacles.
+          </div>
 
           <div id="spaces-list"></div>
+          <div id="obstacles-list"></div>
         </div>
       </div>
 
@@ -86,122 +180,209 @@ export function init() {
   const location = getState('location');
   if (!location) return;
 
-  // Restore saved spaces
-  const savedSpaces = getState('spaces');
-  if (savedSpaces && savedSpaces.length > 0) {
-    drawnSpaces = [...savedSpaces];
-    spaceCounter = drawnSpaces.length;
-  }
+  drawnSpaces = [...(getState('spaces') || [])];
+  drawnObstacles = [...(getState('obstacles') || [])];
+  selectedSpaceId = getState('selectedSpaceId') || drawnSpaces[0]?.id || null;
+  spaceCounter = drawnSpaces.length;
+  obstacleCounter = drawnObstacles.length;
 
   initMap(location);
   initControls();
+  updateSpacesList();
+  updateObstaclesList();
+  updateNextButton();
+  setActiveMode(activeMode);
+  setActiveObstacleTool(activeObstacleTool);
 
   document.getElementById('btn-back-spaces')?.addEventListener('click', () => {
     window.dispatchEvent(new CustomEvent('wizard:back'));
   });
 
   document.getElementById('btn-next-spaces')?.addEventListener('click', () => {
-    setState({ spaces: drawnSpaces });
+    setState({
+      spaces: drawnSpaces,
+      obstacles: drawnObstacles,
+      selectedSpaceId: getEffectiveSelectedSpaceId(),
+    });
     window.dispatchEvent(new CustomEvent('wizard:next'));
   });
 }
 
 function initMap(location) {
-  map = new maplibregl.Map({
+  map = createStepMap({
     container: 'spaces-map',
-    style: 'https://tiles.openfreemap.org/styles/bright',
     center: [location.lng, location.lat],
     zoom: 18,
     pitch: 45,
     bearing: -20,
-  });
-
-  map.addControl(new maplibregl.NavigationControl(), 'bottom-right');
-
-  map.on('load', () => {
-    add3DBuildings();
-    
-    // Re-add saved markers
-    drawnSpaces.forEach(space => {
-      addMarkerToMap(space);
-    });
-    updateSpacesList();
-    updateNextButton();
-  });
-
-  // Map click to add space
-  map.on('click', (e) => {
-    if (drawingMode) {
-      addSpace(e.lngLat.lat, e.lngLat.lng);
-      drawingMode = false;
-      map.getCanvas().style.cursor = '';
-    }
-  });
-}
-
-function add3DBuildings() {
-  const layers = map.getStyle().layers;
-  let labelLayerId;
-  for (let i = 0; i < layers.length; i++) {
-    if (layers[i].type === 'symbol' && layers[i].layout?.['text-field']) {
-      labelLayerId = layers[i].id;
-      break;
-    }
-  }
-
-  map.addLayer({
-    id: '3d-buildings',
-    source: 'openmaptiles',
-    'source-layer': 'building',
-    type: 'fill-extrusion',
-    minzoom: 14,
-    paint: {
-      'fill-extrusion-color': '#3D4A5C',
-      'fill-extrusion-height': ['coalesce', ['get', 'render_height'], 8],
-      'fill-extrusion-base': ['coalesce', ['get', 'render_min_height'], 0],
-      'fill-extrusion-opacity': 0.7,
+    onLoad: () => {
+      drawnSpaces.forEach((space) => addMarkerToMap(space));
+      refreshObstacles();
+      queueHeatmapRefresh();
     },
-  }, labelLayerId);
+  });
+
+  map.on('click', (e) => {
+    handleMapClick(e.lngLat.lat, e.lngLat.lng);
+  });
 }
 
 function initControls() {
-  // Surface type selection
-  document.querySelectorAll('.space-type-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('.space-type-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
+  document.querySelectorAll('.mode-switch-btn').forEach((button) => {
+    button.addEventListener('click', () => {
+      setActiveMode(button.dataset.mode);
     });
   });
 
-  // Orientation slider
+  document.querySelectorAll('.space-type-btn').forEach((button) => {
+    button.addEventListener('click', () => {
+      document.querySelectorAll('.space-type-btn').forEach((chip) => chip.classList.remove('active'));
+      button.classList.add('active');
+      updateOrientationNote(button.dataset.type);
+    });
+  });
+
   const orientSlider = document.getElementById('orientation-slider');
   const orientValue = document.getElementById('orientation-value');
   orientSlider?.addEventListener('input', () => {
-    const deg = parseInt(orientSlider.value);
-    orientValue.textContent = `${deg}° ${getCompassDirection(deg)}`;
+    const deg = parseInt(orientSlider.value, 10);
+    orientValue.textContent = `${degreesToCompass(deg, 'long')} (${deg}°)`;
   });
 
-  // Tilt slider
   const tiltSlider = document.getElementById('tilt-slider');
   const tiltValue = document.getElementById('tilt-value');
   tiltSlider?.addEventListener('input', () => {
     tiltValue.textContent = `${tiltSlider.value}°`;
   });
 
-  // Add space button
   document.getElementById('btn-add-space')?.addEventListener('click', () => {
-    drawingMode = true;
-    map.getCanvas().style.cursor = 'crosshair';
+    setPendingPlacement('space');
   });
+
+  document.querySelectorAll('[data-obstacle-tool]').forEach((button) => {
+    button.addEventListener('click', () => {
+      setActiveObstacleTool(button.dataset.obstacleTool);
+    });
+  });
+
+  document.getElementById('btn-place-obstacle')?.addEventListener('click', () => {
+    setPendingPlacement(activeObstacleTool);
+  });
+
+  updateOrientationNote(document.querySelector('.space-type-btn.active')?.dataset.type || 'ground');
+}
+
+function setActiveMode(mode) {
+  activeMode = mode === 'obstacle' ? 'obstacle' : 'space';
+  cancelPlacement();
+
+  document.querySelectorAll('.mode-switch-btn').forEach((button) => {
+    button.classList.toggle('active', button.dataset.mode === activeMode);
+  });
+
+  document.getElementById('panel-mode-panel')?.classList.toggle('hidden', activeMode !== 'space');
+  document.getElementById('obstacle-mode-panel')?.classList.toggle('hidden', activeMode !== 'obstacle');
+
+  updatePlacementStatus('Choose a mode, then click the action button to place items on the map.');
+}
+
+function setActiveObstacleTool(tool) {
+  activeObstacleTool = obstacleTools.find((entry) => entry.id === tool)?.id || 'fence';
+  cancelPlacement();
+
+  document.querySelectorAll('[data-obstacle-tool]').forEach((button) => {
+    button.classList.toggle('active', button.dataset.obstacleTool === activeObstacleTool);
+  });
+
+  document.querySelectorAll('[data-config-tool]').forEach((panel) => {
+    panel.classList.toggle('hidden', panel.dataset.configTool !== activeObstacleTool);
+  });
+
+  const actionBtn = document.getElementById('btn-place-obstacle');
+  if (actionBtn) {
+    if (activeObstacleTool === 'tree') actionBtn.textContent = '🌳 Place Tree';
+    else if (activeObstacleTool === 'shed') actionBtn.textContent = '⬜ Place Shed / Wall';
+    else actionBtn.textContent = '🟧 Draw Fence';
+  }
+}
+
+function setPendingPlacement(mode) {
+  if (pendingPlacement === mode && (mode !== 'fence' || fenceStartPoint == null)) {
+    cancelPlacement();
+    return;
+  }
+
+  pendingPlacement = mode;
+  fenceStartPoint = null;
+
+  if (map) {
+    map.getCanvas().style.cursor = 'crosshair';
+  }
+
+  if (mode === 'space') {
+    updatePlacementStatus('Click on the map to drop a panel location.');
+  } else if (mode === 'tree') {
+    updatePlacementStatus('Click on the map to place the tree marker.');
+  } else if (mode === 'shed') {
+    updatePlacementStatus('Click on the map to place the shed footprint centre.');
+  } else {
+    updatePlacementStatus('Click the fence start point, then click the fence end point.');
+  }
+}
+
+function cancelPlacement() {
+  pendingPlacement = null;
+  fenceStartPoint = null;
+
+  if (map) {
+    map.getCanvas().style.cursor = '';
+  }
+}
+
+function handleMapClick(lat, lng) {
+  if (!pendingPlacement) return;
+
+  if (pendingPlacement === 'space') {
+    addSpace(lat, lng);
+    cancelPlacement();
+    updatePlacementStatus('Panel marker added.');
+    return;
+  }
+
+  if (pendingPlacement === 'tree') {
+    addTree(lat, lng);
+    cancelPlacement();
+    updatePlacementStatus('Tree added.');
+    return;
+  }
+
+  if (pendingPlacement === 'shed') {
+    addShed(lat, lng);
+    cancelPlacement();
+    updatePlacementStatus('Shed footprint added.');
+    return;
+  }
+
+  if (!fenceStartPoint) {
+    fenceStartPoint = { lat, lng };
+    updatePlacementStatus('Fence start locked. Click the second point to finish the line.');
+    return;
+  }
+
+  addFence(fenceStartPoint, { lat, lng });
+  cancelPlacement();
+  updatePlacementStatus('Fence added.');
 }
 
 function addSpace(lat, lng) {
-  spaceCounter++;
+  spaceCounter += 1;
   const activeType = document.querySelector('.space-type-btn.active');
   const typeId = activeType?.dataset.type || 'ground';
-  const typeInfo = spaceTypes.find(t => t.id === typeId);
-  const orientation = parseInt(document.getElementById('orientation-slider')?.value || 180);
-  const tilt = parseInt(document.getElementById('tilt-slider')?.value || 35);
+  const typeInfo = spaceTypes.find((type) => type.id === typeId);
+  const manualOrientation = parseInt(document.getElementById('orientation-slider')?.value || 180, 10);
+  const tilt = parseInt(document.getElementById('tilt-slider')?.value || 35, 10);
+  const fenceAlignment = typeId === 'fence' ? getNearestFenceAlignment(lat, lng) : null;
+  const orientation = fenceAlignment?.orientation ?? manualOrientation;
 
   const space = {
     id: `space-${spaceCounter}`,
@@ -212,39 +393,134 @@ function addSpace(lat, lng) {
     centerLng: lng,
     orientation,
     tilt,
-    orientationLabel: `${orientation}° ${getCompassDirection(orientation)}`,
+    orientationLabel: `${degreesToCompass(orientation, 'long')} (${orientation}°)`,
+    alignmentHint: fenceAlignment ? 'Aligned to nearby fence' : null,
   };
 
   drawnSpaces.push(space);
+  if (!selectedSpaceId) {
+    selectedSpaceId = space.id;
+  }
   addMarkerToMap(space);
+  applyMarkerSelectionStyles();
   updateSpacesList();
   updateNextButton();
 }
 
+function addFence(startPoint, endPoint) {
+  obstacleCounter += 1;
+  drawnObstacles.push({
+    id: `obstacle-${obstacleCounter}`,
+    type: 'fence',
+    points: [startPoint, endPoint],
+    heightM: parseFloat(document.getElementById('fence-height')?.value || 1.8),
+  });
+  refreshObstacles();
+  queueHeatmapRefresh();
+  updateObstaclesList();
+}
+
+function addTree(lat, lng) {
+  obstacleCounter += 1;
+  drawnObstacles.push({
+    id: `obstacle-${obstacleCounter}`,
+    type: 'tree',
+    lat,
+    lng,
+    heightM: parseFloat(document.getElementById('tree-height')?.value || 5),
+    canopyRadiusM: parseFloat(document.getElementById('tree-radius')?.value || 3),
+  });
+  refreshObstacles();
+  queueHeatmapRefresh();
+  updateObstaclesList();
+}
+
+function addShed(lat, lng) {
+  obstacleCounter += 1;
+  drawnObstacles.push({
+    id: `obstacle-${obstacleCounter}`,
+    type: 'shed',
+    lat,
+    lng,
+    heightM: parseFloat(document.getElementById('shed-height')?.value || 2.5),
+    widthM: parseFloat(document.getElementById('shed-width')?.value || 3),
+    depthM: parseFloat(document.getElementById('shed-depth')?.value || 2),
+    rotationDeg: parseFloat(document.getElementById('shed-rotation')?.value || 0),
+  });
+  refreshObstacles();
+  queueHeatmapRefresh();
+  updateObstaclesList();
+}
+
 function addMarkerToMap(space) {
   const el = document.createElement('div');
-  el.style.cssText = `
-    width: 36px; height: 36px; 
-    background: linear-gradient(135deg, #F59E0B, #EF4444); 
-    border-radius: 50%; 
-    border: 3px solid white; 
-    box-shadow: 0 0 20px rgba(245,158,11,0.4);
-    display: flex; align-items: center; justify-content: center;
-    font-size: 16px; cursor: pointer;
-  `;
   el.textContent = space.typeIcon;
+  el.addEventListener('click', (event) => {
+    event.stopPropagation();
+    selectSpace(space.id);
+  });
 
   const marker = new maplibregl.Marker({ element: el })
     .setLngLat([space.centerLng, space.centerLat])
     .setPopup(new maplibregl.Popup({ offset: 25 }).setHTML(`
       <strong>${space.name}</strong><br/>
       <span style="font-size: 0.8rem; color: #94A3B8;">
-        ${space.orientationLabel} · ${space.tilt}° tilt
+        ${space.orientationLabel} · ${space.tilt}° tilt${space.alignmentHint ? ` · ${space.alignmentHint}` : ''}
       </span>
     `))
     .addTo(map);
 
-  markers.push({ id: space.id, marker });
+  markers.push({ id: space.id, marker, element: el });
+  applyMarkerSelectionStyles();
+}
+
+function refreshObstacles() {
+  if (map?.isStyleLoaded()) {
+    drawObstacles(map, drawnObstacles);
+  }
+}
+
+function queueHeatmapRefresh() {
+  if (heatmapRefreshHandle) {
+    clearTimeout(heatmapRefreshHandle);
+  }
+
+  heatmapRefreshHandle = setTimeout(() => {
+    if (!map?.isStyleLoaded()) return;
+
+    const center = map.getCenter();
+    const buildings = getState('buildings') || [];
+    const featureCollection = samplePlacementHeatmap(center.lat, center.lng, buildings, drawnObstacles, { radiusM: 18, stepM: 2 });
+    drawSuitabilityHeatmap(map, featureCollection);
+  }, 80);
+}
+
+function selectSpace(spaceId) {
+  selectedSpaceId = spaceId;
+  applyMarkerSelectionStyles();
+  updateSpacesList();
+  setState({ selectedSpaceId: spaceId });
+}
+
+function applyMarkerSelectionStyles() {
+  markers.forEach((entry) => {
+    const isSelected = entry.id === selectedSpaceId;
+    entry.element.style.cssText = `
+      width: ${isSelected ? 42 : 36}px;
+      height: ${isSelected ? 42 : 36}px;
+      background: ${isSelected ? 'linear-gradient(135deg, #22C55E, #16A34A)' : 'linear-gradient(135deg, #F59E0B, #EF4444)'};
+      border-radius: 50%;
+      border: 3px solid white;
+      box-shadow: ${isSelected ? '0 0 26px rgba(34, 197, 94, 0.55)' : '0 0 20px rgba(245, 158, 11, 0.4)'};
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+      cursor: pointer;
+      transform: ${isSelected ? 'scale(1.05)' : 'scale(1)'};
+    `;
+    entry.element.textContent = drawnSpaces.find((space) => space.id === entry.id)?.typeIcon || '📍';
+  });
 }
 
 function updateSpacesList() {
@@ -260,34 +536,106 @@ function updateSpacesList() {
     <h4 style="margin-bottom: 10px; font-size: 0.9rem; color: var(--text-secondary);">
       Added Locations (${drawnSpaces.length})
     </h4>
-    ${drawnSpaces.map(s => `
-      <div class="card-flat" style="padding: 10px 14px; margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between;">
+    ${drawnSpaces.map((space) => `
+      <div class="card-flat compact-row ${space.id === selectedSpaceId ? 'analysis-card-best' : ''}">
         <div>
-          <span>${s.typeIcon}</span>
-          <strong style="font-size: 0.85rem;">${s.name}</strong>
+          <span>${space.typeIcon}</span>
+          <strong style="font-size: 0.85rem;">${space.name}</strong>
           <div style="font-size: 0.75rem; color: var(--text-muted);">
-            ${s.orientationLabel} · ${s.tilt}° tilt
+            ${space.orientationLabel} · ${space.tilt}° tilt${space.alignmentHint ? ` · ${space.alignmentHint}` : ''}
           </div>
         </div>
-        <button class="btn btn-sm btn-secondary remove-space-btn" data-id="${s.id}" style="padding: 4px 10px; font-size: 0.75rem;">✕</button>
+        <div class="badge-row">
+          <button class="btn btn-sm btn-outline select-space-btn" data-id="${space.id}" style="padding: 4px 10px; font-size: 0.75rem;">
+            ${space.id === selectedSpaceId ? 'Selected' : 'Use This'}
+          </button>
+          <button class="btn btn-sm btn-secondary remove-space-btn" data-id="${space.id}" style="padding: 4px 10px; font-size: 0.75rem;">✕</button>
+        </div>
       </div>
     `).join('')}
   `;
 
-  // Remove buttons
-  listEl.querySelectorAll('.remove-space-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const id = btn.dataset.id;
-      drawnSpaces = drawnSpaces.filter(s => s.id !== id);
-      const markerObj = markers.find(m => m.id === id);
+  listEl.querySelectorAll('.select-space-btn').forEach((button) => {
+    button.addEventListener('click', () => {
+      selectSpace(button.dataset.id);
+    });
+  });
+
+  listEl.querySelectorAll('.remove-space-btn').forEach((button) => {
+    button.addEventListener('click', () => {
+      const id = button.dataset.id;
+      drawnSpaces = drawnSpaces.filter((space) => space.id !== id);
+
+      const markerObj = markers.find((entry) => entry.id === id);
       if (markerObj) {
         markerObj.marker.remove();
-        markers = markers.filter(m => m.id !== id);
+        markers = markers.filter((entry) => entry.id !== id);
       }
+
+      if (selectedSpaceId === id) {
+        selectedSpaceId = drawnSpaces[0]?.id || null;
+      }
+
       updateSpacesList();
+      applyMarkerSelectionStyles();
       updateNextButton();
     });
   });
+}
+
+function updateObstaclesList() {
+  const listEl = document.getElementById('obstacles-list');
+  if (!listEl) return;
+
+  if (drawnObstacles.length === 0) {
+    listEl.innerHTML = '';
+    return;
+  }
+
+  listEl.innerHTML = `
+    <h4 style="margin: 16px 0 10px; font-size: 0.9rem; color: var(--text-secondary);">
+      Drawn Obstacles (${drawnObstacles.length})
+    </h4>
+    ${drawnObstacles.map((obstacle) => `
+      <div class="card-flat compact-row">
+        <div>
+          <strong style="font-size: 0.85rem;">${formatObstacleLabel(obstacle)}</strong>
+          <div style="font-size: 0.75rem; color: var(--text-muted);">
+            ${formatObstacleDetails(obstacle)}
+          </div>
+        </div>
+        <button class="btn btn-sm btn-secondary remove-obstacle-btn" data-id="${obstacle.id}" style="padding: 4px 10px; font-size: 0.75rem;">✕</button>
+      </div>
+    `).join('')}
+  `;
+
+  listEl.querySelectorAll('.remove-obstacle-btn').forEach((button) => {
+    button.addEventListener('click', () => {
+      const id = button.dataset.id;
+      drawnObstacles = drawnObstacles.filter((obstacle) => obstacle.id !== id);
+      refreshObstacles();
+      queueHeatmapRefresh();
+      updateObstaclesList();
+    });
+  });
+}
+
+function formatObstacleLabel(obstacle) {
+  if (obstacle.type === 'tree') return '🌳 Tree';
+  if (obstacle.type === 'shed') return '⬜ Shed / Wall';
+  return '🟧 Fence';
+}
+
+function formatObstacleDetails(obstacle) {
+  if (obstacle.type === 'tree') {
+    return `${obstacle.heightM}m high · ${obstacle.canopyRadiusM}m canopy radius`;
+  }
+
+  if (obstacle.type === 'shed') {
+    return `${obstacle.widthM}m × ${obstacle.depthM}m · ${obstacle.heightM}m high`;
+  }
+
+  return `${obstacle.heightM}m high line`;
 }
 
 function updateNextButton() {
@@ -297,17 +645,81 @@ function updateNextButton() {
   }
 }
 
-function getCompassDirection(deg) {
-  const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
-  const idx = Math.round(deg / 45) % 8;
-  return dirs[idx];
+function updatePlacementStatus(message) {
+  const statusEl = document.getElementById('placement-status');
+  if (statusEl) {
+    statusEl.textContent = message;
+  }
+}
+
+function updateOrientationNote(typeId) {
+  const noteEl = document.getElementById('orientation-note');
+  if (!noteEl) return;
+
+  if (typeId === 'fence') {
+    noteEl.textContent = 'Fence-mounted panels auto-align to the nearest drawn fence when you place them.';
+    return;
+  }
+
+  noteEl.textContent = 'Pick the general facing if you know it. Fence-mounted panels will auto-align to a nearby drawn fence.';
+}
+
+function getNearestFenceAlignment(lat, lng) {
+  const fences = drawnObstacles.filter((obstacle) => obstacle.type === 'fence' && obstacle.points?.length >= 2);
+  if (!fences.length) return null;
+
+  const scored = fences.map((fence) => {
+    const start = fence.points[0];
+    const end = fence.points[1];
+    const distanceM = distanceToFenceSegment(lat, lng, start, end);
+    const orientation = Math.round(getBearingBetweenPoints(start.lat, start.lng, end.lat, end.lng));
+    return {
+      distanceM,
+      orientation: ((orientation % 360) + 360) % 360,
+    };
+  }).sort((a, b) => a.distanceM - b.distanceM);
+
+  return scored[0]?.distanceM <= 6 ? scored[0] : null;
+}
+
+function distanceToFenceSegment(lat, lng, start, end) {
+  const endMeters = latLngToMeters(start.lat, start.lng, end.lat, end.lng);
+  const pointMeters = latLngToMeters(start.lat, start.lng, lat, lng);
+  const segLenSq = (endMeters.dx ** 2) + (endMeters.dy ** 2);
+
+  if (segLenSq === 0) {
+    return Math.hypot(pointMeters.dx, pointMeters.dy);
+  }
+
+  let t = ((pointMeters.dx * endMeters.dx) + (pointMeters.dy * endMeters.dy)) / segLenSq;
+  t = Math.max(0, Math.min(1, t));
+  const projX = t * endMeters.dx;
+  const projY = t * endMeters.dy;
+
+  return Math.hypot(pointMeters.dx - projX, pointMeters.dy - projY);
+}
+
+function getEffectiveSelectedSpaceId() {
+  return selectedSpaceId && drawnSpaces.some((space) => space.id === selectedSpaceId)
+    ? selectedSpaceId
+    : (drawnSpaces[0]?.id || null);
 }
 
 export function cleanup() {
+  if (heatmapRefreshHandle) {
+    clearTimeout(heatmapRefreshHandle);
+    heatmapRefreshHandle = null;
+  }
+
   if (map) {
     map.remove();
     map = null;
   }
+
   markers = [];
-  drawingMode = false;
+  pendingPlacement = null;
+  fenceStartPoint = null;
+  activeMode = 'space';
+  activeObstacleTool = 'fence';
+  selectedSpaceId = null;
 }

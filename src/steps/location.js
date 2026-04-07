@@ -1,5 +1,6 @@
 import maplibregl from 'maplibre-gl';
 import { getState, setState } from '../utils/state.js';
+import { createStepMap } from '../utils/map-helpers.js';
 
 let map = null;
 let marker = null;
@@ -74,9 +75,8 @@ export function init() {
 }
 
 function initMap() {
-  map = new maplibregl.Map({
+  map = createStepMap({
     container: 'location-map',
-    style: 'https://tiles.openfreemap.org/styles/bright',
     center: [-1.5, 53.0], // Centre of UK
     zoom: 6,
     pitch: 0,
@@ -84,51 +84,11 @@ function initMap() {
     maxBounds: [[-12, 49], [4, 61]], // UK bounds
   });
 
-  map.addControl(new maplibregl.NavigationControl(), 'bottom-right');
-
-  map.on('load', () => {
-    add3DBuildings();
-  });
-
   // Click on map to set location
   map.on('click', (e) => {
     const { lng, lat } = e.lngLat;
     reverseGeocode(lat, lng);
   });
-}
-
-function add3DBuildings() {
-  const layers = map.getStyle().layers;
-  let labelLayerId;
-  for (let i = 0; i < layers.length; i++) {
-    if (layers[i].type === 'symbol' && layers[i].layout?.['text-field']) {
-      labelLayerId = layers[i].id;
-      break;
-    }
-  }
-
-  // Check if building source layer exists
-  const source = map.getSource('openmaptiles');
-  
-  map.addLayer({
-    id: '3d-buildings',
-    source: 'openmaptiles',
-    'source-layer': 'building',
-    type: 'fill-extrusion',
-    minzoom: 14,
-    paint: {
-      'fill-extrusion-color': [
-        'interpolate', ['linear'], ['get', 'render_height'],
-        0, '#2D3748',
-        10, '#3D4A5C',
-        20, '#4A5568',
-        40, '#5A6A80',
-      ],
-      'fill-extrusion-height': ['coalesce', ['get', 'render_height'], 8],
-      'fill-extrusion-base': ['coalesce', ['get', 'render_min_height'], 0],
-      'fill-extrusion-opacity': 0.75,
-    },
-  }, labelLayerId);
 }
 
 function initSearch() {
