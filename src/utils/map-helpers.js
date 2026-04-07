@@ -1,5 +1,5 @@
 import maplibregl from 'maplibre-gl';
-import { getRectangleRing, latLngToMeters } from './geometry.js';
+import { distancePointToSegment, getRectangleRing, latLngToMeters, pointInPolygon } from './geometry.js';
 
 const DEFAULT_STYLE = 'https://tiles.openfreemap.org/styles/bright';
 const BUILDING_LAYER_ID = '3d-buildings';
@@ -169,17 +169,10 @@ export function isSatelliteActive(map) {
 export function drawBuildingFootprintPreview(map, building) {
   clearBuildingFootprintPreview(map);
 
-  if (!Number.isFinite(building?.lat) || !Number.isFinite(building?.lng) || building.frontDoorFacing == null) {
+  const ring = getBuildingPreviewRing(building);
+  if (!ring?.length) {
     return;
   }
-
-  const ring = getRectangleRing(
-    building.lat,
-    building.lng,
-    building.widthM || 5,
-    building.depthM || 9,
-    building.frontDoorFacing
-  );
 
   map.addSource(BUILDING_PREVIEW_SOURCE_ID, {
     type: 'geojson',
@@ -444,6 +437,41 @@ export function drawDynamicShadows(map, featureCollection) {
   });
 }
 
+export function createPanelMarkerElement(space, options = {}) {
+  const compact = options.compact === true;
+  const el = document.createElement('button');
+  el.type = 'button';
+  el.className = `panel-marker${compact ? ' panel-marker-compact' : ''}`;
+  el.innerHTML = `
+    <span class="panel-marker-halo"></span>
+    <span class="panel-marker-card">
+      <span class="panel-marker-grid"></span>
+      <span class="panel-marker-icon">${space.typeIcon || '☀️'}</span>
+    </span>
+  `;
+
+  if (typeof options.onClick === 'function') {
+    el.addEventListener('click', options.onClick);
+  }
+
+  updatePanelMarkerElement(el, space, { selected: options.selected === true });
+  return el;
+}
+
+export function updatePanelMarkerElement(element, space, options = {}) {
+  const rotation = options.rotation ?? space.displayRotation ?? space.orientation ?? 180;
+  const selected = options.selected === true;
+
+  element.classList.toggle('selected', selected);
+  element.style.setProperty('--panel-rotation', `${rotation}deg`);
+  element.setAttribute('aria-label', `${space.name || 'Panel location'} marker`);
+
+  const icon = element.querySelector('.panel-marker-icon');
+  if (icon) {
+    icon.textContent = space.typeIcon || '☀️';
+  }
+}
+
 export function captureNearbyBuildings(map, center, options = {}) {
   const radiusM = options.radiusM ?? 100;
   const excludeRadiusM = options.excludeRadiusM ?? 12;
@@ -488,6 +516,48 @@ export function captureNearbyBuildings(map, center, options = {}) {
   return buildings;
 }
 
+export function captureBuildingAtLocation(map, center, options = {}) {
+  const searchRadiusM = options.searchRadiusM ?? 24;
+
+  let features = [];
+  try {
+    features = map.queryRenderedFeatures(undefined, { layers: [BUILDING_LAYER_ID] }) || [];
+  } catch (error) {
+    return null;
+  }
+
+  let bestMatch = null;
+
+  features.forEach((feature, index) => {
+    const polygons = getFeaturePolygons(feature.geometry);
+    polygons.forEach((ringSet) => {
+      const outerRing = ringSet?.[0];
+      if (!outerRing?.length) return;
+
+      const distanceM = getDistanceFromCenterToRing(center, outerRing);
+      if (distanceM > searchRadiusM) return;
+
+      const height = parseFloat(feature.properties?.render_height || feature.properties?.height || 8);
+      const centroid = getRingCentroid(outerRing);
+      const candidate = {
+        id: `detected-building-${index}`,
+        kind: 'user-detected',
+        lat: centroid.lat,
+        lng: centroid.lng,
+        height: Number.isFinite(height) ? height : 8,
+        footprint: outerRing.map(([lng, lat]) => ({ lat, lng })),
+        distanceM,
+      };
+
+      if (!bestMatch || candidate.distanceM < bestMatch.distanceM) {
+        bestMatch = candidate;
+      }
+    });
+  });
+
+  return bestMatch;
+}
+
 function removeLayerIfExists(map, layerId) {
   if (map.getLayer(layerId)) {
     map.removeLayer(layerId);
@@ -530,4 +600,55 @@ function getRingCentroid(ring) {
     lng: lng / ring.length,
     lat: lat / ring.length,
   };
+}
+
+function getBuildingPreviewRing(building) {
+  if (building?.footprint?.length >= 3) {
+    return ensureClosedRing(building.footprint);
+  }
+
+  if (!Number.isFinite(building?.lat) || !Number.isFinite(building?.lng) || building.frontDoorFacing == null) {
+    return null;
+  }
+
+  return getRectangleRing(
+    building.lat,
+    building.lng,
+    building.widthM || 5,
+    building.depthM || 9,
+    building.frontDoorFacing
+  );
+}
+
+function ensureClosedRing(ring) {
+  if (!ring.length) return ring;
+
+  const first = ring[0];
+  const last = ring[ring.length - 1];
+  if (first.lat === last.lat && first.lng === last.lng) {
+    return ring;
+  }
+
+  return [...ring, first];
+}
+
+function getDistanceFromCenterToRing(center, outerRing) {
+  const polygon = outerRing.map(([lng, lat]) => {
+    const { dx, dy } = latLngToMeters(center.lat, center.lng, lat, lng);
+    return { x: dx, y: dy };
+  });
+  const point = { x: 0, y: 0 };
+
+  if (pointInPolygon(point, polygon)) {
+    return 0;
+  }
+
+  let minDistance = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < polygon.length; i += 1) {
+    const start = polygon[i];
+    const end = polygon[(i + 1) % polygon.length];
+    minDistance = Math.min(minDistance, distancePointToSegment(point, start, end));
+  }
+
+  return minDistance;
 }

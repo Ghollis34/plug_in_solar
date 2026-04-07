@@ -1,7 +1,7 @@
 import maplibregl from 'maplibre-gl';
 import { getState, setState } from '../utils/state.js';
 import { getSunTimes, getMapLightFromSun, getShadowOverlayFeatures, rankSpaces, samplePlacementHeatmap } from '../utils/sun.js';
-import { createStepMap, drawDynamicShadows, drawObstacles, drawSuitabilityHeatmap } from '../utils/map-helpers.js';
+import { createPanelMarkerElement, createStepMap, drawDynamicShadows, drawObstacles, drawSuitabilityHeatmap, updatePanelMarkerElement } from '../utils/map-helpers.js';
 
 let map = null;
 let animationFrame = null;
@@ -134,26 +134,17 @@ function addSpaceMarkers() {
   const spaces = getState('spaces') || [];
 
   spaces.forEach((space) => {
-    const el = document.createElement('div');
-    el.style.cssText = `
-      width: 32px; height: 32px;
-      background: linear-gradient(135deg, #F59E0B, #EF4444);
-      border-radius: 50%;
-      border: 3px solid white;
-      box-shadow: 0 0 15px rgba(245,158,11,0.4);
-      display: flex; align-items: center; justify-content: center;
-      font-size: 14px; cursor: pointer;
-    `;
-    el.textContent = space.typeIcon || '📍';
+    const el = createPanelMarkerElement(space, {
+      compact: true,
+      onClick: (event) => {
+        event.stopPropagation();
+        selectSpace(space.id);
+      },
+    });
 
     const marker = new maplibregl.Marker({ element: el })
       .setLngLat([space.centerLng, space.centerLat])
       .addTo(map);
-
-    el.addEventListener('click', (event) => {
-      event.stopPropagation();
-      selectSpace(space.id);
-    });
 
     markers.push({ id: space.id, marker, element: el });
   });
@@ -259,8 +250,8 @@ function startAnimation() {
   function step(timestamp) {
     if (!isAnimating) return;
 
-    if (!lastTick || (timestamp - lastTick) >= 140) {
-      val = (val + 0.35) % 97;
+    if (!lastTick || (timestamp - lastTick) >= 118) {
+      val = (val + 0.42) % 97;
       if (slider) slider.value = val;
       updateShadows();
       lastTick = timestamp;
@@ -394,21 +385,9 @@ function selectSpace(spaceId) {
 function applyMarkerSelectionStyles() {
   markers.forEach((entry) => {
     const isSelected = entry.id === selectedSpaceId;
-    entry.element.style.cssText = `
-      width: ${isSelected ? 38 : 32}px;
-      height: ${isSelected ? 38 : 32}px;
-      background: ${isSelected ? 'linear-gradient(135deg, #22C55E, #16A34A)' : 'linear-gradient(135deg, #F59E0B, #EF4444)'};
-      border-radius: 50%;
-      border: 3px solid white;
-      box-shadow: ${isSelected ? '0 0 18px rgba(34, 197, 94, 0.55)' : '0 0 15px rgba(245,158,11,0.4)'};
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 14px;
-      cursor: pointer;
-      transform: ${isSelected ? 'scale(1.06)' : 'scale(1)'};
-    `;
-    entry.element.textContent = (getState('spaces') || []).find((space) => space.id === entry.id)?.typeIcon || '📍';
+    const space = (getState('spaces') || []).find((item) => item.id === entry.id) || { id: entry.id };
+    updatePanelMarkerElement(entry.element, space, { selected: isSelected });
+    entry.marker.setLngLat(entry.marker.getLngLat());
   });
 }
 

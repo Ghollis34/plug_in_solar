@@ -1,6 +1,6 @@
 import { getState, setState } from '../utils/state.js';
 import { calcHeight, formatHeight, buildingPresets } from '../utils/buildings.js';
-import { captureNearbyBuildings, createStepMap, drawBuildingFootprintPreview } from '../utils/map-helpers.js';
+import { captureBuildingAtLocation, captureNearbyBuildings, createStepMap, drawBuildingFootprintPreview } from '../utils/map-helpers.js';
 import { degreesToCompass, latLngToMeters, metersToLatLng } from '../utils/geometry.js';
 
 let map = null;
@@ -343,6 +343,7 @@ function saveBuilding() {
   const floors = parseInt(document.getElementById('floor-count')?.value, 10) || 2;
   const pitched = document.getElementById('pitched-btn')?.classList.contains('active') || false;
   const height = calcHeight(floors, pitched);
+  const detectedBuilding = map ? captureBuildingAtLocation(map, draftCenter, { searchRadiusM: 28 }) : null;
 
   setState({
     buildings: [
@@ -357,6 +358,7 @@ function saveBuilding() {
         widthM: DEFAULT_WIDTH_M,
         depthM: DEFAULT_DEPTH_M,
         frontDoorFacing: draftFrontDoorFacing,
+        footprint: detectedBuilding?.footprint || null,
       },
       ...nearbyBuildings,
     ],

@@ -1,8 +1,8 @@
 import maplibregl from 'maplibre-gl';
 import { getState, setState } from '../utils/state.js';
-import { degreesToCompass, getBearingBetweenPoints, latLngToMeters } from '../utils/geometry.js';
+import { degreesToCompass, getBearingBetweenPoints, getRectangleRing, latLngToMeters, metersToLatLng, normalizeDegrees } from '../utils/geometry.js';
 import { samplePlacementHeatmap } from '../utils/sun.js';
-import { createStepMap, drawObstacles, drawSuitabilityHeatmap } from '../utils/map-helpers.js';
+import { createPanelMarkerElement, createStepMap, drawBuildingFootprintPreview, drawObstacles, drawSuitabilityHeatmap, updatePanelMarkerElement } from '../utils/map-helpers.js';
 
 let map = null;
 let activeMode = 'space';
@@ -16,6 +16,10 @@ let spaceCounter = 0;
 let obstacleCounter = 0;
 let selectedSpaceId = null;
 let heatmapRefreshHandle = null;
+
+const SURFACE_SNAP_DISTANCE_M = 6;
+const WALL_SNAP_DISTANCE_M = 5;
+const PANEL_SNAP_OFFSET_M = 0.8;
 
 const spaceTypes = [
   { id: 'railing', icon: '🏗️', label: 'Balcony Railing' },
@@ -75,7 +79,7 @@ export function render() {
                 <span id="orientation-value" style="min-width: 108px; text-align: right; font-weight: 600;">South (180°)</span>
               </div>
               <div class="analysis-note" id="orientation-note" style="margin-top: 8px;">
-                Pick the general facing if you know it. Fence-mounted panels will auto-align to a nearby drawn fence.
+                Pick the general facing if you know it. Fence-mounted panels snap to drawn fences, and wall mounts snap to the nearest house wall.
               </div>
             </div>
 
@@ -216,6 +220,7 @@ function initMap(location) {
     pitch: 45,
     bearing: -20,
     onLoad: () => {
+      drawHousePreview();
       drawnSpaces.forEach((space) => addMarkerToMap(space));
       refreshObstacles();
       queueHeatmapRefresh();
@@ -343,9 +348,9 @@ function handleMapClick(lat, lng) {
   if (!pendingPlacement) return;
 
   if (pendingPlacement === 'space') {
-    addSpace(lat, lng);
+    const space = addSpace(lat, lng);
     cancelPlacement();
-    updatePlacementStatus('Panel marker added.');
+    updatePlacementStatus(space?.alignmentHint ? `${space.alignmentHint}.` : 'Panel marker added.');
     return;
   }
 
@@ -381,20 +386,24 @@ function addSpace(lat, lng) {
   const typeInfo = spaceTypes.find((type) => type.id === typeId);
   const manualOrientation = parseInt(document.getElementById('orientation-slider')?.value || 180, 10);
   const tilt = parseInt(document.getElementById('tilt-slider')?.value || 35, 10);
-  const fenceAlignment = typeId === 'fence' ? getNearestFenceAlignment(lat, lng) : null;
-  const orientation = fenceAlignment?.orientation ?? manualOrientation;
+  const surfaceAlignment = resolveSurfaceAlignment(typeId, lat, lng);
+  const orientation = surfaceAlignment?.orientation ?? manualOrientation;
+  const displayRotation = surfaceAlignment?.displayRotation ?? orientation;
+  const centerLat = surfaceAlignment?.lat ?? lat;
+  const centerLng = surfaceAlignment?.lng ?? lng;
 
   const space = {
     id: `space-${spaceCounter}`,
     name: `${typeInfo?.label || 'Space'} ${spaceCounter}`,
     type: typeId,
     typeIcon: typeInfo?.icon || '📍',
-    centerLat: lat,
-    centerLng: lng,
+    centerLat,
+    centerLng,
     orientation,
+    displayRotation,
     tilt,
     orientationLabel: `${degreesToCompass(orientation, 'long')} (${orientation}°)`,
-    alignmentHint: fenceAlignment ? 'Aligned to nearby fence' : null,
+    alignmentHint: surfaceAlignment?.hint || null,
   };
 
   drawnSpaces.push(space);
@@ -405,6 +414,7 @@ function addSpace(lat, lng) {
   applyMarkerSelectionStyles();
   updateSpacesList();
   updateNextButton();
+  return space;
 }
 
 function addFence(startPoint, endPoint) {
@@ -453,11 +463,11 @@ function addShed(lat, lng) {
 }
 
 function addMarkerToMap(space) {
-  const el = document.createElement('div');
-  el.textContent = space.typeIcon;
-  el.addEventListener('click', (event) => {
-    event.stopPropagation();
-    selectSpace(space.id);
+  const el = createPanelMarkerElement(space, {
+    onClick: (event) => {
+      event.stopPropagation();
+      selectSpace(space.id);
+    },
   });
 
   const marker = new maplibregl.Marker({ element: el })
@@ -505,21 +515,9 @@ function selectSpace(spaceId) {
 function applyMarkerSelectionStyles() {
   markers.forEach((entry) => {
     const isSelected = entry.id === selectedSpaceId;
-    entry.element.style.cssText = `
-      width: ${isSelected ? 42 : 36}px;
-      height: ${isSelected ? 42 : 36}px;
-      background: ${isSelected ? 'linear-gradient(135deg, #22C55E, #16A34A)' : 'linear-gradient(135deg, #F59E0B, #EF4444)'};
-      border-radius: 50%;
-      border: 3px solid white;
-      box-shadow: ${isSelected ? '0 0 26px rgba(34, 197, 94, 0.55)' : '0 0 20px rgba(245, 158, 11, 0.4)'};
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 16px;
-      cursor: pointer;
-      transform: ${isSelected ? 'scale(1.05)' : 'scale(1)'};
-    `;
-    entry.element.textContent = drawnSpaces.find((space) => space.id === entry.id)?.typeIcon || '📍';
+    const space = drawnSpaces.find((item) => item.id === entry.id) || { id: entry.id };
+    updatePanelMarkerElement(entry.element, space, { selected: isSelected });
+    entry.marker.setLngLat(entry.marker.getLngLat());
   });
 }
 
@@ -657,11 +655,18 @@ function updateOrientationNote(typeId) {
   if (!noteEl) return;
 
   if (typeId === 'fence') {
-    noteEl.textContent = 'Fence-mounted panels auto-align to the nearest drawn fence when you place them.';
+    noteEl.textContent = 'Fence-mounted panels snap onto the nearest drawn fence and inherit that fence line visually.';
     return;
   }
 
-  noteEl.textContent = 'Pick the general facing if you know it. Fence-mounted panels will auto-align to a nearby drawn fence.';
+  if (typeId === 'wall') {
+    noteEl.textContent = getPrimaryBuildingFootprint().length >= 3
+      ? 'Click near a house wall to snap the panel onto that wall. The marker rotates to match the wall.'
+      : 'Set the house direction first if you want wall mounts to snap to the house outline.';
+    return;
+  }
+
+  noteEl.textContent = 'Pick the general facing if you know it. Fence-mounted panels snap to fences, and wall mounts snap to the house outline.';
 }
 
 function getNearestFenceAlignment(lat, lng) {
@@ -671,32 +676,170 @@ function getNearestFenceAlignment(lat, lng) {
   const scored = fences.map((fence) => {
     const start = fence.points[0];
     const end = fence.points[1];
-    const distanceM = distanceToFenceSegment(lat, lng, start, end);
-    const orientation = Math.round(getBearingBetweenPoints(start.lat, start.lng, end.lat, end.lng));
-    return {
-      distanceM,
-      orientation: ((orientation % 360) + 360) % 360,
-    };
+    return getSurfaceAlignment(start, end, lat, lng, {
+      hint: 'Snapped to nearby fence',
+      offsetM: PANEL_SNAP_OFFSET_M,
+    });
   }).sort((a, b) => a.distanceM - b.distanceM);
 
-  return scored[0]?.distanceM <= 6 ? scored[0] : null;
+  return scored[0]?.distanceM <= SURFACE_SNAP_DISTANCE_M ? scored[0] : null;
 }
 
-function distanceToFenceSegment(lat, lng, start, end) {
+function drawHousePreview() {
+  const userBuilding = getPrimaryBuilding();
+  if (!map?.isStyleLoaded() || !userBuilding) return;
+  drawBuildingFootprintPreview(map, userBuilding);
+}
+
+function getPrimaryBuilding() {
+  return (getState('buildings') || []).find((building) => building.kind === 'user' || building.id === 'user-building') || null;
+}
+
+function getPrimaryBuildingFootprint() {
+  const building = getPrimaryBuilding();
+  if (!building) return [];
+
+  if (building.footprint?.length >= 3) {
+    return building.footprint;
+  }
+
+  if (Number.isFinite(building.lat) && Number.isFinite(building.lng) && Number.isFinite(building.frontDoorFacing)) {
+    return getRectangleRing(
+      building.lat,
+      building.lng,
+      building.widthM || 5,
+      building.depthM || 9,
+      building.frontDoorFacing
+    ).slice(0, -1);
+  }
+
+  return [];
+}
+
+function resolveSurfaceAlignment(typeId, lat, lng) {
+  if (typeId === 'fence') {
+    return getNearestFenceAlignment(lat, lng);
+  }
+
+  if (typeId === 'wall') {
+    return getNearestWallAlignment(lat, lng);
+  }
+
+  return null;
+}
+
+function getNearestWallAlignment(lat, lng) {
+  const footprint = getPrimaryBuildingFootprint();
+  if (footprint.length < 3) return null;
+
+  const centroid = getPointCentroid(footprint);
+  const scored = footprint.map((point, index) => {
+    const next = footprint[(index + 1) % footprint.length];
+    return getSurfaceAlignment(point, next, lat, lng, {
+      hint: 'Snapped to house wall',
+      offsetM: PANEL_SNAP_OFFSET_M,
+      outwardReference: centroid,
+    });
+  }).sort((a, b) => a.distanceM - b.distanceM);
+
+  return scored[0]?.distanceM <= WALL_SNAP_DISTANCE_M ? scored[0] : null;
+}
+
+function getSurfaceAlignment(start, end, lat, lng, options = {}) {
+  const projection = projectToSegmentMeters(lat, lng, start, end);
+  const baseBearing = normalizeDegrees(Math.round(getBearingBetweenPoints(start.lat, start.lng, end.lat, end.lng)));
+  const facing = normalizeDegrees(Math.round(resolveFacingBearing(baseBearing, projection, start, options.outwardReference)));
+  const offsetVector = getBearingVector(facing);
+  const snappedPoint = metersToLatLng(
+    start.lat,
+    start.lng,
+    projection.projX + (offsetVector.dx * (options.offsetM ?? 0)),
+    projection.projY + (offsetVector.dy * (options.offsetM ?? 0))
+  );
+
+  return {
+    distanceM: projection.distanceM,
+    orientation: facing,
+    displayRotation: baseBearing,
+    lat: snappedPoint.lat,
+    lng: snappedPoint.lng,
+    hint: options.hint || null,
+  };
+}
+
+function projectToSegmentMeters(lat, lng, start, end) {
   const endMeters = latLngToMeters(start.lat, start.lng, end.lat, end.lng);
   const pointMeters = latLngToMeters(start.lat, start.lng, lat, lng);
   const segLenSq = (endMeters.dx ** 2) + (endMeters.dy ** 2);
 
   if (segLenSq === 0) {
-    return Math.hypot(pointMeters.dx, pointMeters.dy);
+    return {
+      distanceM: Math.hypot(pointMeters.dx, pointMeters.dy),
+      projX: 0,
+      projY: 0,
+      cross: 0,
+      start,
+    };
   }
 
   let t = ((pointMeters.dx * endMeters.dx) + (pointMeters.dy * endMeters.dy)) / segLenSq;
   t = Math.max(0, Math.min(1, t));
+
   const projX = t * endMeters.dx;
   const projY = t * endMeters.dy;
+  const deltaX = pointMeters.dx - projX;
+  const deltaY = pointMeters.dy - projY;
 
-  return Math.hypot(pointMeters.dx - projX, pointMeters.dy - projY);
+  return {
+    distanceM: Math.hypot(deltaX, deltaY),
+    projX,
+    projY,
+    cross: (endMeters.dx * pointMeters.dy) - (endMeters.dy * pointMeters.dx),
+    start,
+  };
+}
+
+function resolveFacingBearing(baseBearing, projection, origin, outwardReference) {
+  const candidateA = normalizeDegrees(baseBearing + 90);
+  const candidateB = normalizeDegrees(baseBearing - 90);
+
+  if (outwardReference) {
+    const referenceMeters = latLngToMeters(origin.lat, origin.lng, outwardReference.lat, outwardReference.lng);
+    const fromProjection = {
+      dx: referenceMeters.dx - projection.projX,
+      dy: referenceMeters.dy - projection.projY,
+    };
+    const dotA = dotBearing(candidateA, fromProjection);
+    const dotB = dotBearing(candidateB, fromProjection);
+    return dotA <= dotB ? candidateA : candidateB;
+  }
+
+  return projection.cross <= 0 ? candidateA : candidateB;
+}
+
+function getBearingVector(bearing) {
+  const radians = normalizeDegrees(bearing) * Math.PI / 180;
+  return {
+    dx: Math.sin(radians),
+    dy: Math.cos(radians),
+  };
+}
+
+function dotBearing(bearing, vector) {
+  const axis = getBearingVector(bearing);
+  return (axis.dx * vector.dx) + (axis.dy * vector.dy);
+}
+
+function getPointCentroid(points) {
+  const total = points.reduce((acc, point) => ({
+    lat: acc.lat + point.lat,
+    lng: acc.lng + point.lng,
+  }), { lat: 0, lng: 0 });
+
+  return {
+    lat: total.lat / points.length,
+    lng: total.lng / points.length,
+  };
 }
 
 function getEffectiveSelectedSpaceId() {
