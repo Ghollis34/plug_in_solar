@@ -35,7 +35,9 @@ export function getShadowLength(height, sunAltitude) {
 }
 
 export function getShadowDirection(sunAzimuth) {
-  let dirDeg = (sunAzimuth * (180 / Math.PI)) + 360;
+  // Shadow falls OPPOSITE to the sun direction
+  // sunAzimuth from SunCalc is radians from south CW → add 180° to flip
+  let dirDeg = (sunAzimuth * (180 / Math.PI)) + 180;
   dirDeg = ((dirDeg % 360) + 360) % 360;
   return dirDeg;
 }
@@ -697,8 +699,13 @@ function formatRelativeDirection(relativeToBuilding) {
 function buildWarnings(relativeToBuilding, shadowFactor, obstructionSummary) {
   const warnings = [];
 
+  // Direction-based warnings, with sanity check against actual shadow factor
   if (relativeToBuilding === 'north') {
-    warnings.push('North of building - heavy shading expected');
+    if (shadowFactor < 0.55) {
+      warnings.push('North of building - heavy shading confirmed by analysis');
+    } else {
+      warnings.push('North of building - but analysis shows reasonable sun (open aspect?)');
+    }
   } else if (relativeToBuilding === 'north-east' || relativeToBuilding === 'north-west') {
     warnings.push('North side of building - long seasonal shadows likely');
   } else if (relativeToBuilding === 'east') {
@@ -706,7 +713,11 @@ function buildWarnings(relativeToBuilding, shadowFactor, obstructionSummary) {
   } else if (relativeToBuilding === 'west') {
     warnings.push('West of building - limited morning sun');
   } else if (relativeToBuilding === 'south') {
-    warnings.push('South of building - strongest direct sun');
+    if (shadowFactor > 0.6) {
+      warnings.push('South of building - strongest direct sun');
+    } else {
+      warnings.push('South of building - but obstructions are reducing direct sun');
+    }
   } else if (relativeToBuilding === 'on-building') {
     warnings.push('Mounted on the building - roof or wall orientation matters more than garden shading');
   }

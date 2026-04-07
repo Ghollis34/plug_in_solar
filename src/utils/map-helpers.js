@@ -153,6 +153,12 @@ export function setSatelliteActive(map, active) {
     map.setPaintProperty(BUILDING_LAYER_ID, 'fill-extrusion-opacity', active ? 0.18 : 0.75);
   }
 
+  // Boost heatmap contrast over satellite imagery
+  if (map.getLayer(HEATMAP_LAYER_ID)) {
+    map.setPaintProperty(HEATMAP_LAYER_ID, 'heatmap-opacity', active ? 0.78 : 0.52);
+    map.setPaintProperty(HEATMAP_LAYER_ID, 'heatmap-intensity', active ? 1.5 : 1.1);
+  }
+
   const toggle = map.getContainer().querySelector(`.${SATELLITE_TOGGLE_CLASS}`);
   if (toggle) {
     syncSatelliteToggleLabel(toggle, active);

@@ -65,12 +65,16 @@ export function init() {
     window.dispatchEvent(new CustomEvent('wizard:next'));
   });
 
-  // Restore saved location
+  // Restore saved location or clear stale input
   const saved = getState('location');
+  const searchInput = document.getElementById('location-search');
   if (saved) {
     setTimeout(() => {
       setLocation(saved.lat, saved.lng, saved.displayName);
+      if (searchInput) searchInput.value = saved.displayName || '';
     }, 500);
+  } else if (searchInput) {
+    searchInput.value = '';
   }
 }
 

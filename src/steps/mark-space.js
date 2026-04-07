@@ -46,6 +46,11 @@ export function render() {
       <div class="step-body full-width">
         <div class="map-container" id="spaces-map"></div>
 
+        <div class="map-placement-banner hidden" id="placement-banner">
+          <span id="placement-banner-text">Click the map to place</span>
+          <button class="btn btn-sm btn-secondary" id="btn-cancel-placement" style="padding: 4px 12px; font-size: 0.75rem;">✕ Cancel</button>
+        </div>
+
         <div class="map-overlay-panel">
           <div class="mode-switch mb-md">
             <button class="mode-switch-btn active" data-mode="space">Panel Locations</button>
@@ -154,6 +159,9 @@ export function render() {
 
             <button class="btn btn-primary w-full mb-md" id="btn-place-obstacle">
               🟧 Draw Fence
+            </button>
+            <button class="btn btn-secondary w-full mb-md hidden" id="btn-cancel-fence">
+              ✕ Cancel Drawing
             </button>
           </div>
 
@@ -274,6 +282,19 @@ function initControls() {
     setPendingPlacement(activeObstacleTool);
   });
 
+  document.getElementById('btn-cancel-fence')?.addEventListener('click', () => {
+    cancelPlacement();
+    updatePlacementStatus('Drawing cancelled.');
+  });
+
+  document.getElementById('btn-cancel-placement')?.addEventListener('click', () => {
+    cancelPlacement();
+    updatePlacementStatus('Placement cancelled.');
+  });
+
+  // Escape key to cancel placement or fence drawing
+  document.addEventListener('keydown', handleEscapeKey);
+
   updateOrientationNote(document.querySelector('.space-type-btn.active')?.dataset.type || 'ground');
 }
 
@@ -324,15 +345,23 @@ function setPendingPlacement(mode) {
     map.getCanvas().style.cursor = 'crosshair';
   }
 
+  let bannerText = 'Click the map to place';
   if (mode === 'space') {
+    bannerText = '📌 Click the map to drop a panel location';
     updatePlacementStatus('Click on the map to drop a panel location.');
   } else if (mode === 'tree') {
+    bannerText = '🌳 Click the map to place the tree';
     updatePlacementStatus('Click on the map to place the tree marker.');
   } else if (mode === 'shed') {
+    bannerText = '⬜ Click the map to place the shed centre';
     updatePlacementStatus('Click on the map to place the shed footprint centre.');
   } else {
+    bannerText = '🟧 Click the fence start point';
     updatePlacementStatus('Click the fence start point, then click the fence end point.');
   }
+
+  showPlacementBanner(bannerText);
+  updateCancelFenceButton();
 }
 
 function cancelPlacement() {
@@ -342,6 +371,9 @@ function cancelPlacement() {
   if (map) {
     map.getCanvas().style.cursor = '';
   }
+
+  hidePlacementBanner();
+  updateCancelFenceButton();
 }
 
 function handleMapClick(lat, lng) {
@@ -371,6 +403,8 @@ function handleMapClick(lat, lng) {
   if (!fenceStartPoint) {
     fenceStartPoint = { lat, lng };
     updatePlacementStatus('Fence start locked. Click the second point to finish the line.');
+    showPlacementBanner('🟧 Click the fence end point (Esc to cancel)');
+    updateCancelFenceButton();
     return;
   }
 
@@ -650,6 +684,35 @@ function updatePlacementStatus(message) {
   }
 }
 
+function showPlacementBanner(text) {
+  const banner = document.getElementById('placement-banner');
+  const bannerText = document.getElementById('placement-banner-text');
+  if (banner) {
+    banner.classList.remove('hidden');
+    if (bannerText) bannerText.textContent = text;
+  }
+}
+
+function hidePlacementBanner() {
+  const banner = document.getElementById('placement-banner');
+  if (banner) banner.classList.add('hidden');
+}
+
+function updateCancelFenceButton() {
+  const cancelBtn = document.getElementById('btn-cancel-fence');
+  if (cancelBtn) {
+    const showCancel = pendingPlacement === 'fence' || fenceStartPoint != null;
+    cancelBtn.classList.toggle('hidden', !showCancel);
+  }
+}
+
+function handleEscapeKey(e) {
+  if (e.key === 'Escape' && (pendingPlacement || fenceStartPoint)) {
+    cancelPlacement();
+    updatePlacementStatus('Placement cancelled.');
+  }
+}
+
 function updateOrientationNote(typeId) {
   const noteEl = document.getElementById('orientation-note');
   if (!noteEl) return;
@@ -853,6 +916,8 @@ export function cleanup() {
     clearTimeout(heatmapRefreshHandle);
     heatmapRefreshHandle = null;
   }
+
+  document.removeEventListener('keydown', handleEscapeKey);
 
   if (map) {
     map.remove();
