@@ -201,9 +201,12 @@ function initMap(location) {
         showPlacementMapLoading('Loading site objects…');
         applyPlacementSceneLighting();
         refreshPanelMarkers();
+        hidePlacementMapLoading();
+        queueHeatmapRefresh({ fastMode: true, immediate: true });
         refreshObstaclesAfterSettledPaint(() => {
-          hidePlacementMapLoading();
-          queueHeatmapRefresh({ fastMode: true, immediate: true });
+          if (!initialSceneReady) {
+            queueHeatmapRefresh({ fastMode: true, immediate: true });
+          }
         });
       });
     },
