@@ -12,7 +12,8 @@
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet" />
   <link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" />
 </head>
 <body>
@@ -23,19 +24,20 @@
           <span class="logo-icon">☀️</span>
           <span class="logo-text">Solar<span class="logo-accent">Spot</span></span>
         </a>
+        <nav class="header-links" id="header-links" aria-label="Section navigation"></nav>
         <nav class="header-nav" id="header-nav">
-          <button class="btn-reset" id="btn-start-over" style="display:none;">Start Over</button>
+          <button class="btn-reset" id="btn-start-over" style="display:none;">Start Again</button>
         </nav>
       </div>
-    </header>
-
-    <main id="wizard-container">
       <div id="progress-bar" style="display:none;">
         <div class="progress-track">
           <div class="progress-fill" id="progress-fill"></div>
         </div>
         <div class="progress-steps" id="progress-steps"></div>
       </div>
+    </header>
+
+    <main id="wizard-container">
       <div id="step-content"></div>
     </main>
   </div>

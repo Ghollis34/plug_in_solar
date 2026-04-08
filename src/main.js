@@ -13,8 +13,8 @@ import * as results from './steps/results.js';
 const steps = [
   { id: 'landing', label: 'Welcome', module: landing, showProgress: false },
   { id: 'location', label: 'Location', module: location, showProgress: true },
-  { id: 'buildings', label: 'Heights', module: buildingHeights, showProgress: true },
-  { id: 'spaces', label: 'Spaces', module: markSpace, showProgress: true },
+  { id: 'buildings', label: 'Site Setup', module: buildingHeights, showProgress: true },
+  { id: 'spaces', label: 'Placement', module: markSpace, showProgress: true },
   { id: 'shadows', label: 'Shadows', module: shadowAnalysis, showProgress: true },
   { id: 'kits', label: 'Kits', module: kitSelection, showProgress: true },
   { id: 'results', label: 'Results', module: results, showProgress: true },
@@ -24,6 +24,14 @@ let currentStep = 0;
 let currentModule = null;
 
 function init() {
+  const savedCurrentStep = Number.isFinite(getState('currentStep')) ? getState('currentStep') : 0;
+  const savedMaxVisitedStep = Number.isFinite(getState('maxVisitedStep')) ? getState('maxVisitedStep') : 0;
+  const derivedMaxVisitedStep = Math.max(0, savedCurrentStep, savedMaxVisitedStep);
+
+  if (derivedMaxVisitedStep !== savedMaxVisitedStep) {
+    setState({ maxVisitedStep: derivedMaxVisitedStep });
+  }
+
   // Restore step from state (but always start from landing)
   currentStep = 0;
   renderStep(currentStep);
@@ -34,9 +42,18 @@ function init() {
   window.addEventListener('wizard:reset', () => resetWizard());
   window.addEventListener('wizard:goto', (e) => goToStep(e.detail.step));
 
+  document.getElementById('progress-steps')?.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-step-index]');
+    if (!button || button.disabled) return;
+
+    const stepIndex = parseInt(button.dataset.stepIndex || '', 10);
+    if (!Number.isFinite(stepIndex)) return;
+    goToStep(stepIndex);
+  });
+
   // Start over button
   document.getElementById('btn-start-over')?.addEventListener('click', () => {
-    if (confirm('Start over? Your current progress will be reset.')) {
+    if (confirm('Start again? Your current progress will be reset.')) {
       resetWizard();
     }
   });
@@ -46,7 +63,6 @@ function navigateNext() {
   if (currentStep < steps.length - 1) {
     cleanupCurrentStep();
     currentStep++;
-    setState({ currentStep });
     renderStep(currentStep);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
@@ -56,18 +72,17 @@ function navigateBack() {
   if (currentStep > 0) {
     cleanupCurrentStep();
     currentStep--;
-    setState({ currentStep });
     renderStep(currentStep);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 }
 
 function goToStep(stepIndex) {
-  if (stepIndex >= 0 && stepIndex < steps.length) {
+  if (stepIndex >= 0 && stepIndex < steps.length && canNavigateToStep(stepIndex)) {
     cleanupCurrentStep();
     currentStep = stepIndex;
-    setState({ currentStep });
     renderStep(currentStep);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 }
 
@@ -93,6 +108,9 @@ function renderStep(stepIndex) {
 
   if (!contentEl) return;
 
+  document.documentElement.style.setProperty('--header-height', step.showProgress ? '112px' : '72px');
+  syncStepProgress(stepIndex);
+
   // Animate transition
   contentEl.style.animation = 'none';
   contentEl.offsetHeight; // trigger reflow
@@ -100,6 +118,7 @@ function renderStep(stepIndex) {
 
   // Render step content
   contentEl.innerHTML = step.module.render();
+  updateHeader(step);
 
   // Show/hide progress bar
   if (step.showProgress && progressEl) {
@@ -119,14 +138,58 @@ function renderStep(stepIndex) {
   
   // Use requestAnimationFrame to ensure DOM is ready
   requestAnimationFrame(() => {
+    bindHeaderLinks();
     step.module.init();
   });
 }
 
+function updateHeader(step) {
+  const headerEl = document.getElementById('app-header');
+  const headerLinksEl = document.getElementById('header-links');
+  const isLanding = step.id === 'landing';
+
+  document.body.classList.toggle('landing-step-active', isLanding);
+  headerEl?.classList.toggle('landing-mode', isLanding);
+  headerEl?.classList.toggle('has-progress', step.showProgress);
+
+  if (!headerLinksEl) return;
+
+  if (!isLanding) {
+    headerLinksEl.innerHTML = '';
+    headerLinksEl.style.display = 'none';
+    return;
+  }
+
+  headerLinksEl.innerHTML = `
+    <a class="header-link active" href="#landing-section">Home</a>
+    <a class="header-link" href="#how-it-works">How it works</a>
+    <a class="header-link" href="#landing-kits">Solar Kits</a>
+    <a class="header-link" href="#landing-footer">Contact</a>
+  `;
+  headerLinksEl.style.display = 'flex';
+}
+
+function bindHeaderLinks() {
+  document.querySelectorAll('#header-links a[href^="#"]').forEach((link) => {
+    link.addEventListener('click', (event) => {
+      const targetId = link.getAttribute('href');
+      if (!targetId) return;
+      const targetEl = document.querySelector(targetId);
+      if (!targetEl) return;
+      event.preventDefault();
+      targetEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  });
+}
+
 function updateProgressBar(stepIndex) {
-  const progressSteps = steps.filter(s => s.showProgress);
-  const currentProgressIndex = progressSteps.findIndex(s => s.id === steps[stepIndex].id);
+  const progressSteps = steps
+    .map((step, index) => ({ ...step, index }))
+    .filter((step) => step.showProgress);
+  const currentProgressIndex = progressSteps.findIndex((step) => step.index === stepIndex);
   const totalProgressSteps = progressSteps.length;
+  const maxVisitedStep = getMaxVisitedStep();
+  const highestNavigableStep = getHighestNavigableStep();
   
   // Update fill
   const fillPercent = ((currentProgressIndex + 1) / totalProgressSteps) * 100;
@@ -140,11 +203,86 @@ function updateProgressBar(stepIndex) {
   if (stepsEl) {
     stepsEl.innerHTML = progressSteps.map((step, i) => {
       let cls = 'progress-step';
-      if (i === currentProgressIndex) cls += ' active';
-      else if (i < currentProgressIndex) cls += ' completed';
-      return `<span class="${cls}">${step.label}</span>`;
+      const isActive = i === currentProgressIndex;
+      const isCompleted = i < currentProgressIndex;
+      const isVisited = step.index <= maxVisitedStep && !isActive && !isCompleted;
+      const isClickable = !isActive && step.index <= highestNavigableStep;
+
+      if (isActive) cls += ' active';
+      else if (isCompleted) cls += ' completed';
+      else if (isVisited) cls += ' visited';
+
+      if (isClickable) cls += ' clickable';
+      else if (!isActive) cls += ' locked';
+
+      return `
+        <button
+          type="button"
+          class="${cls}"
+          data-step-index="${step.index}"
+          ${isActive || !isClickable ? 'disabled' : ''}
+          ${isActive ? 'aria-current="step"' : ''}
+        >
+          ${step.label}
+        </button>
+      `;
     }).join('');
   }
+}
+
+function syncStepProgress(stepIndex) {
+  const maxVisitedStep = Math.max(getMaxVisitedStep(), stepIndex);
+  const updates = {};
+
+  if (getState('currentStep') !== stepIndex) {
+    updates.currentStep = stepIndex;
+  }
+
+  if (getState('maxVisitedStep') !== maxVisitedStep) {
+    updates.maxVisitedStep = maxVisitedStep;
+  }
+
+  if (Object.keys(updates).length) {
+    setState(updates);
+  }
+}
+
+function getMaxVisitedStep() {
+  const value = getState('maxVisitedStep');
+  return Number.isFinite(value) ? value : 0;
+}
+
+function canNavigateToStep(stepIndex) {
+  if (stepIndex === currentStep) return true;
+  return stepIndex <= getHighestNavigableStep();
+}
+
+function getHighestNavigableStep() {
+  return Math.min(getMaxVisitedStep(), getHighestReachableStepFromState());
+}
+
+function getHighestReachableStepFromState() {
+  const state = getState();
+  const hasLocation = Boolean(state.location);
+  const hasUserBuilding = (state.buildings || []).some(
+    (building) => building.kind === 'user' || building.id === 'user-building'
+  );
+  const hasSpaces = Array.isArray(state.spaces) && state.spaces.length > 0;
+  const hasSelectedKit = Boolean(state.selectedKit);
+
+  let highestStep = 1;
+
+  if (!hasLocation) return highestStep;
+  highestStep = 2;
+
+  if (!hasUserBuilding) return highestStep;
+  highestStep = 3;
+
+  if (!hasSpaces) return highestStep;
+  highestStep = 5;
+
+  if (!hasSelectedKit) return highestStep;
+  return 6;
 }
 
 // Boot the app

@@ -5,15 +5,16 @@ import config from '../data/config.json';
  * @param {Object} params
  * @param {number} params.kitCost - Kit price in £
  * @param {number} params.annualKwh - Estimated annual generation in kWh
+ * @param {number} [params.annualValuePerKwh] - Modelled value per generated kWh in £
  * @param {number} params.warrantyYears - Warranty period
  * @returns {Object} Full ROI breakdown
  */
-export function calculateROI({ kitCost, annualKwh, warrantyYears = 10 }) {
-  const pricePerKwh = config.electricityPrice / 100; // Convert pence to pounds
+export function calculateROI({ kitCost, annualKwh, annualValuePerKwh, warrantyYears = 10 }) {
+  const valuePerKwh = Number.isFinite(annualValuePerKwh) ? annualValuePerKwh : (config.electricityPrice / 100);
   const degradation = config.panelDegradation;
   
   // Annual savings in first year
-  const annualSavingsYear1 = annualKwh * pricePerKwh;
+  const annualSavingsYear1 = annualKwh * valuePerKwh;
   
   // Payback period (accounting for degradation)
   let paybackYears = 0;
@@ -26,7 +27,7 @@ export function calculateROI({ kitCost, annualKwh, warrantyYears = 10 }) {
   for (let year = 1; year <= 25; year++) {
     const degradationFactor = Math.pow(1 - degradation, year - 1);
     const yearKwh = annualKwh * degradationFactor;
-    const yearSavings = yearKwh * pricePerKwh;
+    const yearSavings = yearKwh * valuePerKwh;
     cumSavings += yearSavings;
     
     yearlyData.push({
@@ -88,6 +89,7 @@ export function calculateROI({ kitCost, annualKwh, warrantyYears = 10 }) {
     // Config used
     electricityPrice: config.electricityPrice,
     electricityPriceSource: config.electricityPriceSource,
+    valuePerKwh: Math.round(valuePerKwh * 10000) / 10000,
     kitCost,
   };
 }

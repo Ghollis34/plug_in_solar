@@ -6,6 +6,7 @@ const STORAGE_KEY = 'solarspot_state';
 
 const defaultState = {
   currentStep: 0,
+  maxVisitedStep: 0,
   location: null,       // { lat, lng, displayName, postcode }
   buildings: [],        // [{ id, floors, pitched, height, lat, lng, widthM, depthM, frontDoorFacing }]
   spaces: [],           // [{ id, name, type, polygon, orientation, tilt, sunHours }]

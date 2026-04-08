@@ -1,8 +1,8 @@
 import maplibregl from 'maplibre-gl';
 import { getState, setState } from '../utils/state.js';
 import { degreesToCompass, getBearingBetweenPoints, getRectangleRing, latLngToMeters, metersToLatLng, normalizeDegrees } from '../utils/geometry.js';
-import { samplePlacementHeatmap } from '../utils/sun.js';
-import { createPanelMarkerElement, createStepMap, drawBuildingFootprintPreview, drawObstacles, drawSuitabilityHeatmap, updatePanelMarkerElement } from '../utils/map-helpers.js';
+import { getMapLightFromSun, samplePlacementHeatmap } from '../utils/sun.js';
+import { createPanelMarkerElement, createStepMap, drawBuildingFootprintPreview, drawObstacles, drawSuitabilityHeatmap, normalizeObstacles, updatePanelMarkerElement } from '../utils/map-helpers.js';
 
 let map = null;
 let activeMode = 'space';
@@ -16,6 +16,8 @@ let spaceCounter = 0;
 let obstacleCounter = 0;
 let selectedSpaceId = null;
 let heatmapRefreshHandle = null;
+let heatmapIdleHandle = null;
+let initialSceneReady = false;
 
 const SURFACE_SNAP_DISTANCE_M = 6;
 const WALL_SNAP_DISTANCE_M = 5;
@@ -35,146 +37,107 @@ const obstacleTools = [
   { id: 'shed', label: 'Shed / Wall', icon: '⬜' },
 ];
 
+const SHED_DIRECTION_OPTIONS = [
+  { label: 'N', deg: 0 },
+  { label: 'NE', deg: 45 },
+  { label: 'E', deg: 90 },
+  { label: 'SE', deg: 135 },
+  { label: 'S', deg: 180 },
+  { label: 'SW', deg: 225 },
+  { label: 'W', deg: 270 },
+  { label: 'NW', deg: 315 },
+];
+
 export function render() {
+  const obstacleCount = (getState('obstacles') || []).length;
+
   return `
-    <div class="step-page">
+    <div class="step-page step-page-map">
       <div class="step-header">
-        <h2 class="step-title">✏️ Mark Spaces & Obstacles</h2>
-        <p class="step-subtitle">Place candidate panel spots, then draw the fences, trees, and structures that could block them.</p>
+        <div class="section-kicker">Step 3 · Placement</div>
+        <h2 class="step-title">Choose Panel Locations</h2>
+        <p class="step-subtitle">Add the candidate panel spots you want us to compare. Your site obstacles from the previous step are already applied to the map.</p>
       </div>
 
       <div class="step-body full-width">
         <div class="map-container" id="spaces-map"></div>
+        <div class="map-loading-overlay" id="placement-map-loading">
+          <div class="loading-spinner"></div>
+          <div id="placement-map-loading-text">Loading placement surface…</div>
+        </div>
+        <div class="map-overlay-bottom map-overlay-bottom-legend">
+          <div class="map-legend-title">Heatmap guide</div>
+          <div class="map-legend-copy">The surface is a direct-sun guide. Green means stronger year-round exposure, amber means mixed, and red means weaker.</div>
+          <div class="analysis-note" id="heatmap-status" style="margin-top: 8px;">Rendering suitability surface…</div>
+        </div>
 
         <div class="map-placement-banner hidden" id="placement-banner">
           <span id="placement-banner-text">Click the map to place</span>
           <button class="btn btn-sm btn-secondary" id="btn-cancel-placement" style="padding: 4px 12px; font-size: 0.75rem;">✕ Cancel</button>
         </div>
 
-        <div class="map-overlay-panel">
-          <div class="mode-switch mb-md">
-            <button class="mode-switch-btn active" data-mode="space">Panel Locations</button>
-            <button class="mode-switch-btn" data-mode="obstacle">Obstacles</button>
+        <div class="map-overlay-panel map-overlay-panel-planner">
+          <div class="map-panel-header">
+            <div>
+              <div class="map-panel-kicker">Panel Placement</div>
+              <h3 class="map-panel-title">Candidate panel locations</h3>
+            </div>
+            <div class="map-panel-pill">${obstacleCount} site obstacles</div>
           </div>
 
-          <div id="panel-mode-panel">
-            <h4 style="margin-bottom: 12px;">Add Panel Locations</h4>
+          <h4 style="margin-bottom: 12px;">Add Panel Locations</h4>
 
-            <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 16px;">
-              Add at least one candidate panel spot. Each marker stores its own orientation and tilt, and the heatmap shows where direct sun is strongest around the property.
-            </p>
+          <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 16px;">
+            Add at least one candidate panel spot. Each marker stores its own orientation and tilt, and the heatmap shows where direct sun is strongest around the property.
+          </p>
 
-            <div class="form-group mb-md">
-              <label class="form-label">Surface type</label>
-              <div class="space-type-grid">
-                ${spaceTypes.map((type) => `
-                  <button class="space-type-btn ${type.id === 'ground' ? 'active' : ''}" data-type="${type.id}">
-                    <span class="type-icon">${type.icon}</span>
-                    ${type.label}
-                  </button>
-                `).join('')}
-              </div>
+          <div class="form-group mb-md">
+            <label class="form-label">Surface type</label>
+            <div class="space-type-grid">
+              ${spaceTypes.map((type) => `
+                <button class="space-type-btn ${type.id === 'ground' ? 'active' : ''}" data-type="${type.id}">
+                  <span class="type-icon">${type.icon}</span>
+                  ${type.label}
+                </button>
+              `).join('')}
             </div>
-
-            <div class="form-group mb-md">
-              <label class="form-label">Panel facing</label>
-              <div class="flex items-center gap-md">
-                <input type="range" class="range-slider" id="orientation-slider"
-                       min="0" max="360" value="180" />
-                <span id="orientation-value" style="min-width: 108px; text-align: right; font-weight: 600;">South (180°)</span>
-              </div>
-              <div class="analysis-note" id="orientation-note" style="margin-top: 8px;">
-                Pick the general facing if you know it. Fence-mounted panels snap to drawn fences, and wall mounts snap to the nearest house wall.
-              </div>
-            </div>
-
-            <div class="form-group mb-md">
-              <label class="form-label">Panel tilt (°)</label>
-              <div class="flex items-center gap-md">
-                <input type="range" class="range-slider" id="tilt-slider"
-                       min="0" max="90" value="35" />
-                <span id="tilt-value" style="min-width: 36px; text-align: right; font-weight: 600;">35°</span>
-              </div>
-            </div>
-
-            <button class="btn btn-primary w-full mb-md" id="btn-add-space">
-              📌 Place Panel Marker
-            </button>
           </div>
 
-          <div id="obstacle-mode-panel" class="hidden">
-            <h4 style="margin-bottom: 12px;">Draw Obstacles</h4>
-
-            <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 16px;">
-              Use satellite view if it helps. Fences and trees affect the analysis directly; sheds use a simple rectangular footprint.
-            </p>
-
-            <div class="form-group mb-md">
-              <label class="form-label">Obstacle type</label>
-              <div class="direction-grid">
-                ${obstacleTools.map((tool) => `
-                  <button class="direction-chip ${tool.id === activeObstacleTool ? 'active' : ''}" data-obstacle-tool="${tool.id}">
-                    ${tool.icon} ${tool.label}
-                  </button>
-                `).join('')}
-              </div>
+          <div class="form-group mb-md">
+            <label class="form-label">Panel facing</label>
+            <div class="flex items-center gap-md">
+              <input type="range" class="range-slider" id="orientation-slider"
+                     min="0" max="360" value="180" />
+              <span id="orientation-value" style="min-width: 108px; text-align: right; font-weight: 600;">South (180°)</span>
             </div>
-
-            <div class="obstacle-form ${activeObstacleTool === 'fence' ? '' : 'hidden'}" data-config-tool="fence">
-              <div class="form-group mb-md">
-                <label class="form-label">Fence height (m)</label>
-                <input type="number" class="form-input" id="fence-height" min="0.5" max="5" step="0.1" value="1.8" />
-              </div>
+            <div class="analysis-note" id="orientation-note" style="margin-top: 8px;">
+              Pick the general facing if you know it. Fence-mounted panels snap to saved fences, and wall mounts snap to the selected property outline.
             </div>
-
-            <div class="obstacle-form hidden" data-config-tool="tree">
-              <div class="form-group mb-md">
-                <label class="form-label">Tree height (m)</label>
-                <input type="number" class="form-input" id="tree-height" min="1" max="30" step="0.5" value="5" />
-              </div>
-              <div class="form-group mb-md">
-                <label class="form-label">Canopy radius (m)</label>
-                <input type="number" class="form-input" id="tree-radius" min="1" max="15" step="0.5" value="3" />
-              </div>
-            </div>
-
-            <div class="obstacle-form hidden" data-config-tool="shed">
-              <div class="form-group mb-md">
-                <label class="form-label">Height (m)</label>
-                <input type="number" class="form-input" id="shed-height" min="1" max="10" step="0.1" value="2.5" />
-              </div>
-              <div class="form-group mb-md">
-                <label class="form-label">Width (m)</label>
-                <input type="number" class="form-input" id="shed-width" min="1" max="20" step="0.5" value="3" />
-              </div>
-              <div class="form-group mb-md">
-                <label class="form-label">Depth (m)</label>
-                <input type="number" class="form-input" id="shed-depth" min="1" max="20" step="0.5" value="2" />
-              </div>
-              <div class="form-group mb-md">
-                <label class="form-label">Rotation (° from North)</label>
-                <input type="number" class="form-input" id="shed-rotation" min="0" max="359" step="5" value="0" />
-              </div>
-            </div>
-
-            <button class="btn btn-primary w-full mb-md" id="btn-place-obstacle">
-              🟧 Draw Fence
-            </button>
-            <button class="btn btn-secondary w-full mb-md hidden" id="btn-cancel-fence">
-              ✕ Cancel Drawing
-            </button>
           </div>
+
+          <div class="form-group mb-md">
+            <label class="form-label">Panel tilt (°)</label>
+            <div class="flex items-center gap-md">
+              <input type="range" class="range-slider" id="tilt-slider"
+                     min="0" max="90" value="35" />
+              <span id="tilt-value" style="min-width: 36px; text-align: right; font-weight: 600;">35°</span>
+            </div>
+          </div>
+
+          <button class="btn btn-primary w-full mb-md" id="btn-add-space">
+            📌 Place Panel Marker
+          </button>
 
           <div class="analysis-note mb-md" id="placement-status">
-            Choose a mode, then click the action button to place items on the map.
+            Click the button, then drop candidate panel locations onto the map. To edit fences, sheds, or trees, go back to Site Setup.
           </div>
 
           <div class="analysis-note mb-md">
-            Heatmap guide: green = strongest direct sun, amber = mixed, red = weakest. It updates when you add or remove obstacles.
+            Fence and wall snaps show a coloured alignment strip under the marker so you can see when it has locked onto a real surface.
           </div>
 
-          <div id="spaces-list"></div>
           <div id="obstacles-list"></div>
+          <div id="spaces-list"></div>
         </div>
       </div>
 
@@ -193,18 +156,18 @@ export function init() {
   if (!location) return;
 
   drawnSpaces = [...(getState('spaces') || [])];
-  drawnObstacles = [...(getState('obstacles') || [])];
+  drawnObstacles = normalizeObstacles(getState('obstacles') || []);
   selectedSpaceId = getState('selectedSpaceId') || drawnSpaces[0]?.id || null;
   spaceCounter = drawnSpaces.length;
   obstacleCounter = drawnObstacles.length;
+  initialSceneReady = false;
 
   initMap(location);
   initControls();
-  updateSpacesList();
   updateObstaclesList();
+  updateSpacesList();
   updateNextButton();
-  setActiveMode(activeMode);
-  setActiveObstacleTool(activeObstacleTool);
+  updatePlacementStatus('Click the button, then drop candidate panel locations onto the map. To edit fences, sheds, or trees, go back to Site Setup.');
 
   document.getElementById('btn-back-spaces')?.addEventListener('click', () => {
     window.dispatchEvent(new CustomEvent('wizard:back'));
@@ -221,32 +184,41 @@ export function init() {
 }
 
 function initMap(location) {
+  const mapCenter = getPlacementCenter(location);
   map = createStepMap({
     container: 'spaces-map',
-    center: [location.lng, location.lat],
-    zoom: 18,
-    pitch: 45,
-    bearing: -20,
+    center: [mapCenter.lng, mapCenter.lat],
+    zoom: 18.6,
+    pitch: 55,
+    bearing: -24,
     onLoad: () => {
+      showPlacementMapLoading('Positioning map…');
       drawHousePreview();
+      refreshObstaclesAfterSettledPaint();
       drawnSpaces.forEach((space) => addMarkerToMap(space));
-      refreshObstacles();
-      queueHeatmapRefresh();
+      applyPlacementSceneLighting();
+      fitMapToPlacementSite(() => {
+        showPlacementMapLoading('Loading site objects…');
+        applyPlacementSceneLighting();
+        refreshPanelMarkers();
+        refreshObstaclesAfterSettledPaint(() => {
+          hidePlacementMapLoading();
+          queueHeatmapRefresh({ fastMode: true, immediate: true });
+        });
+      });
     },
   });
 
   map.on('click', (e) => {
     handleMapClick(e.lngLat.lat, e.lngLat.lng);
   });
+
+  map.on('rotate', () => {
+    refreshPanelMarkers();
+  });
 }
 
 function initControls() {
-  document.querySelectorAll('.mode-switch-btn').forEach((button) => {
-    button.addEventListener('click', () => {
-      setActiveMode(button.dataset.mode);
-    });
-  });
-
   document.querySelectorAll('.space-type-btn').forEach((button) => {
     button.addEventListener('click', () => {
       document.querySelectorAll('.space-type-btn').forEach((chip) => chip.classList.remove('active'));
@@ -268,23 +240,20 @@ function initControls() {
     tiltValue.textContent = `${tiltSlider.value}°`;
   });
 
-  document.getElementById('btn-add-space')?.addEventListener('click', () => {
-    setPendingPlacement('space');
-  });
-
-  document.querySelectorAll('[data-obstacle-tool]').forEach((button) => {
+  document.querySelectorAll('[data-shed-rotation]').forEach((button) => {
     button.addEventListener('click', () => {
-      setActiveObstacleTool(button.dataset.obstacleTool);
+      const value = parseInt(button.dataset.shedRotation, 10);
+      setShedRotation(Number.isFinite(value) ? value : 0);
     });
   });
 
-  document.getElementById('btn-place-obstacle')?.addEventListener('click', () => {
-    setPendingPlacement(activeObstacleTool);
+  document.getElementById('shed-rotation-slider')?.addEventListener('input', (event) => {
+    const value = parseInt(event.target.value, 10);
+    setShedRotation(Number.isFinite(value) ? value : 0);
   });
 
-  document.getElementById('btn-cancel-fence')?.addEventListener('click', () => {
-    cancelPlacement();
-    updatePlacementStatus('Drawing cancelled.');
+  document.getElementById('btn-add-space')?.addEventListener('click', () => {
+    setPendingPlacement('space');
   });
 
   document.getElementById('btn-cancel-placement')?.addEventListener('click', () => {
@@ -292,9 +261,7 @@ function initControls() {
     updatePlacementStatus('Placement cancelled.');
   });
 
-  // Escape key to cancel placement or fence drawing
   document.addEventListener('keydown', handleEscapeKey);
-
   updateOrientationNote(document.querySelector('.space-type-btn.active')?.dataset.type || 'ground');
 }
 
@@ -377,40 +344,11 @@ function cancelPlacement() {
 }
 
 function handleMapClick(lat, lng) {
-  if (!pendingPlacement) return;
+  if (pendingPlacement !== 'space') return;
 
-  if (pendingPlacement === 'space') {
-    const space = addSpace(lat, lng);
-    cancelPlacement();
-    updatePlacementStatus(space?.alignmentHint ? `${space.alignmentHint}.` : 'Panel marker added.');
-    return;
-  }
-
-  if (pendingPlacement === 'tree') {
-    addTree(lat, lng);
-    cancelPlacement();
-    updatePlacementStatus('Tree added.');
-    return;
-  }
-
-  if (pendingPlacement === 'shed') {
-    addShed(lat, lng);
-    cancelPlacement();
-    updatePlacementStatus('Shed footprint added.');
-    return;
-  }
-
-  if (!fenceStartPoint) {
-    fenceStartPoint = { lat, lng };
-    updatePlacementStatus('Fence start locked. Click the second point to finish the line.');
-    showPlacementBanner('🟧 Click the fence end point (Esc to cancel)');
-    updateCancelFenceButton();
-    return;
-  }
-
-  addFence(fenceStartPoint, { lat, lng });
+  const space = addSpace(lat, lng);
   cancelPlacement();
-  updatePlacementStatus('Fence added.');
+  updatePlacementStatus(space?.alignmentHint ? `${space.alignmentHint}.` : 'Panel marker added.');
 }
 
 function addSpace(lat, lng) {
@@ -438,6 +376,7 @@ function addSpace(lat, lng) {
     tilt,
     orientationLabel: `${degreesToCompass(orientation, 'long')} (${orientation}°)`,
     alignmentHint: surfaceAlignment?.hint || null,
+    surfaceAligned: surfaceAlignment?.surfaceAligned === true,
   };
 
   drawnSpaces.push(space);
@@ -489,7 +428,7 @@ function addShed(lat, lng) {
     heightM: parseFloat(document.getElementById('shed-height')?.value || 2.5),
     widthM: parseFloat(document.getElementById('shed-width')?.value || 3),
     depthM: parseFloat(document.getElementById('shed-depth')?.value || 2),
-    rotationDeg: parseFloat(document.getElementById('shed-rotation')?.value || 0),
+    rotationDeg: getShedRotation(),
   });
   refreshObstacles();
   queueHeatmapRefresh();
@@ -504,7 +443,12 @@ function addMarkerToMap(space) {
     },
   });
 
-  const marker = new maplibregl.Marker({ element: el })
+  const marker = new maplibregl.Marker({
+    element: el,
+    anchor: 'center',
+    pitchAlignment: 'map',
+    rotationAlignment: 'map',
+  })
     .setLngLat([space.centerLng, space.centerLat])
     .setPopup(new maplibregl.Popup({ offset: 25 }).setHTML(`
       <strong>${space.name}</strong><br/>
@@ -524,19 +468,94 @@ function refreshObstacles() {
   }
 }
 
-function queueHeatmapRefresh() {
-  if (heatmapRefreshHandle) {
-    clearTimeout(heatmapRefreshHandle);
+function refreshObstaclesAfterSettledPaint(onDone) {
+  if (!map) {
+    onDone?.();
+    return;
   }
 
-  heatmapRefreshHandle = setTimeout(() => {
-    if (!map?.isStyleLoaded()) return;
+  let completed = false;
+  const finish = () => {
+    if (completed) return;
+    completed = true;
+    refreshObstaclesDeferred(onDone);
+  };
 
-    const center = map.getCenter();
-    const buildings = getState('buildings') || [];
-    const featureCollection = samplePlacementHeatmap(center.lat, center.lng, buildings, drawnObstacles, { radiusM: 18, stepM: 2 });
-    drawSuitabilityHeatmap(map, featureCollection);
-  }, 80);
+  refreshObstacles();
+
+  if (typeof map.once === 'function') {
+    map.once('idle', finish);
+    window.setTimeout(finish, 180);
+    return;
+  }
+
+  finish();
+}
+
+function refreshObstaclesDeferred(onDone) {
+  const run = () => {
+    refreshObstacles();
+    onDone?.();
+  };
+
+  if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(run);
+    });
+    return;
+  }
+
+  window.setTimeout(run, 0);
+}
+
+function renderPlacementScene(options = {}) {
+  if (!map?.isStyleLoaded()) return;
+  refreshObstacles();
+  queueHeatmapRefresh(options);
+}
+
+function queueHeatmapRefresh(options = {}) {
+  cancelScheduledHeatmapRefresh();
+  setHeatmapStatus('Rendering suitability surface…');
+
+  const delay = options.immediate ? 40 : 170;
+  heatmapRefreshHandle = window.setTimeout(() => {
+    const runRender = () => {
+      heatmapIdleHandle = null;
+      heatmapRefreshHandle = null;
+
+      try {
+        if (!map?.isStyleLoaded()) {
+          hidePlacementMapLoading();
+          setHeatmapStatus('Suitability surface unavailable.');
+          return;
+        }
+
+        const center = getHeatmapCenter();
+        const buildings = getState('buildings') || [];
+        const featureCollection = samplePlacementHeatmap(center.lat, center.lng, buildings, drawnObstacles, {
+          radiusM: 14,
+          stepM: 2.5,
+          fastMode: options.fastMode === true,
+        });
+        drawSuitabilityHeatmap(map, featureCollection);
+        refreshObstacles();
+        setHeatmapStatus('Suitability surface ready.');
+        initialSceneReady = true;
+        refreshPanelMarkers();
+      } catch (error) {
+        console.error('Failed to render placement heatmap:', error);
+        setHeatmapStatus('Suitability surface failed to load.');
+      }
+    };
+
+    if (!options.immediate && typeof window.requestIdleCallback === 'function') {
+      heatmapIdleHandle = window.requestIdleCallback(runRender, { timeout: 360 });
+      return;
+    }
+
+    runRender();
+  }, delay);
 }
 
 function selectSpace(spaceId) {
@@ -547,11 +566,17 @@ function selectSpace(spaceId) {
 }
 
 function applyMarkerSelectionStyles() {
+  refreshPanelMarkers();
+}
+
+function refreshPanelMarkers() {
   markers.forEach((entry) => {
     const isSelected = entry.id === selectedSpaceId;
     const space = drawnSpaces.find((item) => item.id === entry.id) || { id: entry.id };
-    updatePanelMarkerElement(entry.element, space, { selected: isSelected });
-    entry.marker.setLngLat(entry.marker.getLngLat());
+    updatePanelMarkerElement(entry.element, space, {
+      selected: isSelected,
+      rotation: getMarkerScreenRotation(space),
+    });
   });
 }
 
@@ -620,14 +645,24 @@ function updateObstaclesList() {
   if (!listEl) return;
 
   if (drawnObstacles.length === 0) {
-    listEl.innerHTML = '';
+    listEl.innerHTML = `
+      <div class="card-flat card-flat-subtle" style="padding: 12px; margin: 0 0 14px;">
+        <div style="font-weight: 600; margin-bottom: 4px;">Site obstacles</div>
+        <div style="font-size: 0.85rem; color: var(--text-secondary);">
+          No fences, sheds, or trees have been carried into this step yet. Go back to Site Setup if you need to add them.
+        </div>
+      </div>
+    `;
     return;
   }
 
   listEl.innerHTML = `
-    <h4 style="margin: 16px 0 10px; font-size: 0.9rem; color: var(--text-secondary);">
-      Drawn Obstacles (${drawnObstacles.length})
+    <h4 style="margin: 0 0 10px; font-size: 0.9rem; color: var(--text-secondary);">
+      Site Obstacles (${drawnObstacles.length})
     </h4>
+    <div class="analysis-note mb-md" style="margin-bottom: 12px;">
+      These are the fences, sheds, and trees from Site Setup. They are read-only here and used for placement snapping and shadow scoring.
+    </div>
     ${drawnObstacles.map((obstacle) => `
       <div class="card-flat compact-row">
         <div>
@@ -636,10 +671,24 @@ function updateObstaclesList() {
             ${formatObstacleDetails(obstacle)}
           </div>
         </div>
-        <button class="btn btn-sm btn-secondary remove-obstacle-btn" data-id="${obstacle.id}" style="padding: 4px 10px; font-size: 0.75rem;">✕</button>
+        <div class="obstacle-action-group">
+          ${obstacle.type === 'shed' ? `
+            <button class="btn btn-sm btn-outline rotate-obstacle-btn" data-id="${obstacle.id}" data-rotate="-15" style="padding: 4px 10px; font-size: 0.75rem;">↺ 15°</button>
+            <button class="btn btn-sm btn-outline rotate-obstacle-btn" data-id="${obstacle.id}" data-rotate="15" style="padding: 4px 10px; font-size: 0.75rem;">↻ 15°</button>
+          ` : ''}
+          <button class="btn btn-sm btn-secondary remove-obstacle-btn" data-id="${obstacle.id}" style="padding: 4px 10px; font-size: 0.75rem;">✕</button>
+        </div>
       </div>
     `).join('')}
   `;
+
+  listEl.querySelectorAll('.rotate-obstacle-btn').forEach((button) => {
+    button.addEventListener('click', () => {
+      const delta = parseInt(button.dataset.rotate || '0', 10);
+      if (!Number.isFinite(delta)) return;
+      rotateShed(button.dataset.id, delta);
+    });
+  });
 
   listEl.querySelectorAll('.remove-obstacle-btn').forEach((button) => {
     button.addEventListener('click', () => {
@@ -664,10 +713,58 @@ function formatObstacleDetails(obstacle) {
   }
 
   if (obstacle.type === 'shed') {
-    return `${obstacle.widthM}m × ${obstacle.depthM}m · ${obstacle.heightM}m high`;
+    return `${obstacle.widthM}m × ${obstacle.depthM}m · ${obstacle.heightM}m high · facing ${degreesToCompass(obstacle.rotationDeg || 0, 'long')} (${Math.round(obstacle.rotationDeg || 0)}°)`;
   }
 
   return `${obstacle.heightM}m high line`;
+}
+
+function setShedRotation(value) {
+  const slider = document.getElementById('shed-rotation-slider');
+  if (slider) {
+    slider.value = String(value);
+  }
+  updateShedRotationUI();
+}
+
+function getShedRotation() {
+  const value = parseInt(document.getElementById('shed-rotation-slider')?.value || 0, 10);
+  return Number.isFinite(value) ? value : 0;
+}
+
+function updateShedRotationUI() {
+  const rotation = getShedRotation();
+  const valueEl = document.getElementById('shed-rotation-value');
+  const noteEl = document.getElementById('shed-rotation-note');
+
+  document.querySelectorAll('[data-shed-rotation]').forEach((chip) => {
+    chip.classList.toggle('active', parseInt(chip.dataset.shedRotation, 10) === rotation);
+  });
+
+  if (valueEl) {
+    valueEl.textContent = `${degreesToCompass(rotation, 'long')} (${rotation}°)`;
+  }
+
+  if (noteEl) {
+    noteEl.textContent = `Shed front set to ${degreesToCompass(rotation, 'long')}. Place it on the map when the direction looks right.`;
+  }
+}
+
+function rotateShed(obstacleId, deltaDeg) {
+  drawnObstacles = drawnObstacles.map((obstacle) => {
+    if (obstacle.id !== obstacleId || obstacle.type !== 'shed') {
+      return obstacle;
+    }
+
+    return {
+      ...obstacle,
+      rotationDeg: normalizeDegrees((obstacle.rotationDeg || 0) + deltaDeg),
+    };
+  });
+
+  refreshObstacles();
+  queueHeatmapRefresh();
+  updateObstaclesList();
 }
 
 function updateNextButton() {
@@ -718,13 +815,13 @@ function updateOrientationNote(typeId) {
   if (!noteEl) return;
 
   if (typeId === 'fence') {
-    noteEl.textContent = 'Fence-mounted panels snap onto the nearest drawn fence and inherit that fence line visually.';
+    noteEl.textContent = 'Fence-mounted panels snap onto the nearest drawn fence. Successful snaps show an amber alignment strip beneath the marker.';
     return;
   }
 
   if (typeId === 'wall') {
     noteEl.textContent = getPrimaryBuildingFootprint().length >= 3
-      ? 'Click near a house wall to snap the panel onto that wall. The marker rotates to match the wall.'
+      ? 'Click near a house wall to snap the panel onto that wall. Successful snaps show a blue alignment strip beneath the marker.'
       : 'Set the house direction first if you want wall mounts to snap to the house outline.';
     return;
   }
@@ -742,6 +839,7 @@ function getNearestFenceAlignment(lat, lng) {
     return getSurfaceAlignment(start, end, lat, lng, {
       hint: 'Snapped to nearby fence',
       offsetM: PANEL_SNAP_OFFSET_M,
+      surfaceType: 'fence',
     });
   }).sort((a, b) => a.distanceM - b.distanceM);
 
@@ -752,6 +850,195 @@ function drawHousePreview() {
   const userBuilding = getPrimaryBuilding();
   if (!map?.isStyleLoaded() || !userBuilding) return;
   drawBuildingFootprintPreview(map, userBuilding);
+}
+
+function fitMapToPlacementSite(onComplete) {
+  if (!map?.isStyleLoaded()) {
+    onComplete?.();
+    return;
+  }
+
+  const bounds = getPlacementBounds();
+  if (!bounds) {
+    onComplete?.();
+    return;
+  }
+
+  const desktop = window.innerWidth >= 1024;
+  let completed = false;
+  let fallbackTimer = null;
+
+  const finish = () => {
+    if (completed) return;
+    completed = true;
+    map.off('moveend', handleMoveEnd);
+    if (fallbackTimer) {
+      window.clearTimeout(fallbackTimer);
+      fallbackTimer = null;
+    }
+    onComplete?.();
+  };
+
+  const handleMoveEnd = () => {
+    finish();
+  };
+
+  map.on('moveend', handleMoveEnd);
+  fallbackTimer = window.setTimeout(finish, 1000);
+
+  try {
+    map.fitBounds(bounds, {
+      padding: desktop
+        ? { top: 72, right: 88, bottom: 96, left: 470 }
+        : { top: 72, right: 24, bottom: 148, left: 24 },
+      maxZoom: 19.6,
+      pitch: 55,
+      bearing: -24,
+      duration: 750,
+      essential: true,
+    });
+  } catch (error) {
+    finish();
+  }
+}
+
+function applyPlacementSceneLighting() {
+  const location = getState('location');
+  if (!map?.isStyleLoaded() || !location) return;
+
+  const center = getHeatmapCenter();
+  const lightTime = new Date();
+  lightTime.setMonth(5, 21);
+  lightTime.setHours(14, 30, 0, 0);
+
+  const lightProps = getMapLightFromSun(lightTime, center.lat, center.lng);
+
+  try {
+    map.setLight({
+      anchor: 'map',
+      position: [1.5, lightProps.position[1], Math.max(12, lightProps.position[2])],
+      intensity: Math.max(0.52, lightProps.intensity),
+      color: lightProps.color,
+    });
+  } catch (error) {
+    // Style/light support varies slightly by renderer; placement still works without explicit light control.
+  }
+}
+
+function getPlacementCenter(location) {
+  const userBuilding = getPrimaryBuilding();
+  if (Number.isFinite(userBuilding?.lat) && Number.isFinite(userBuilding?.lng)) {
+    return { lat: userBuilding.lat, lng: userBuilding.lng };
+  }
+
+  return location;
+}
+
+function getHeatmapCenter() {
+  const userBuilding = getPrimaryBuilding();
+  if (Number.isFinite(userBuilding?.lat) && Number.isFinite(userBuilding?.lng)) {
+    return { lat: userBuilding.lat, lng: userBuilding.lng };
+  }
+
+  const center = map?.getCenter();
+  return center
+    ? { lat: center.lat, lng: center.lng }
+    : getPlacementCenter(getState('location'));
+}
+
+function getPlacementBounds() {
+  const points = [];
+  const propertyFootprint = getPrimaryBuildingFootprint();
+  propertyFootprint.forEach((point) => {
+    if (Number.isFinite(point?.lat) && Number.isFinite(point?.lng)) {
+      points.push(point);
+    }
+  });
+
+  drawnObstacles.forEach((obstacle) => {
+    if (obstacle.type === 'fence' && obstacle.points?.length) {
+      obstacle.points.forEach((point) => {
+        if (Number.isFinite(point?.lat) && Number.isFinite(point?.lng)) {
+          points.push(point);
+        }
+      });
+      return;
+    }
+
+    if (obstacle.type === 'shed' && Number.isFinite(obstacle.lat) && Number.isFinite(obstacle.lng)) {
+      const ring = getRectangleRing(
+        obstacle.lat,
+        obstacle.lng,
+        obstacle.widthM || 3,
+        obstacle.depthM || 2,
+        obstacle.rotationDeg || 0
+      );
+      ring.forEach((point) => points.push(point));
+      return;
+    }
+
+    if (Number.isFinite(obstacle.lat) && Number.isFinite(obstacle.lng)) {
+      points.push({ lat: obstacle.lat, lng: obstacle.lng });
+    }
+  });
+
+  if (!points.length) return null;
+
+  let west = Number.POSITIVE_INFINITY;
+  let east = Number.NEGATIVE_INFINITY;
+  let south = Number.POSITIVE_INFINITY;
+  let north = Number.NEGATIVE_INFINITY;
+
+  points.forEach((point) => {
+    west = Math.min(west, point.lng);
+    east = Math.max(east, point.lng);
+    south = Math.min(south, point.lat);
+    north = Math.max(north, point.lat);
+  });
+
+  if (![west, east, south, north].every(Number.isFinite)) {
+    return null;
+  }
+
+  return [[west, south], [east, north]];
+}
+
+function getMarkerScreenRotation(space) {
+  const worldRotation = space.displayRotation ?? space.orientation ?? 180;
+  return normalizeDegrees(worldRotation - (map?.getBearing() || 0));
+}
+
+function cancelScheduledHeatmapRefresh() {
+  if (heatmapRefreshHandle) {
+    window.clearTimeout(heatmapRefreshHandle);
+    heatmapRefreshHandle = null;
+  }
+
+  if (heatmapIdleHandle && typeof window.cancelIdleCallback === 'function') {
+    window.cancelIdleCallback(heatmapIdleHandle);
+    heatmapIdleHandle = null;
+  }
+}
+
+function setHeatmapStatus(message) {
+  const statusEl = document.getElementById('heatmap-status');
+  if (statusEl) {
+    statusEl.textContent = message;
+  }
+}
+
+function showPlacementMapLoading(message) {
+  const overlay = document.getElementById('placement-map-loading');
+  const textEl = document.getElementById('placement-map-loading-text');
+  if (!overlay) return;
+  overlay.classList.remove('hidden');
+  if (textEl && message) {
+    textEl.textContent = message;
+  }
+}
+
+function hidePlacementMapLoading() {
+  document.getElementById('placement-map-loading')?.classList.add('hidden');
 }
 
 function getPrimaryBuilding() {
@@ -802,6 +1089,7 @@ function getNearestWallAlignment(lat, lng) {
       hint: 'Snapped to house wall',
       offsetM: PANEL_SNAP_OFFSET_M,
       outwardReference: centroid,
+      surfaceType: 'wall',
     });
   }).sort((a, b) => a.distanceM - b.distanceM);
 
@@ -826,8 +1114,16 @@ function getSurfaceAlignment(start, end, lat, lng, options = {}) {
     displayRotation: baseBearing,
     lat: snappedPoint.lat,
     lng: snappedPoint.lng,
-    hint: options.hint || null,
+    hint: options.hint ? `${options.hint} · ${getSurfaceLineLabel(baseBearing)}` : null,
+    surfaceType: options.surfaceType || null,
+    surfaceAligned: true,
   };
+}
+
+function getSurfaceLineLabel(bearing) {
+  const forward = degreesToCompass(bearing, 'short');
+  const reverse = degreesToCompass(bearing + 180, 'short');
+  return `${forward}-${reverse} line`;
 }
 
 function projectToSegmentMeters(lat, lng, start, end) {
@@ -912,10 +1208,7 @@ function getEffectiveSelectedSpaceId() {
 }
 
 export function cleanup() {
-  if (heatmapRefreshHandle) {
-    clearTimeout(heatmapRefreshHandle);
-    heatmapRefreshHandle = null;
-  }
+  cancelScheduledHeatmapRefresh();
 
   document.removeEventListener('keydown', handleEscapeKey);
 
@@ -930,4 +1223,6 @@ export function cleanup() {
   activeMode = 'space';
   activeObstacleTool = 'fence';
   selectedSpaceId = null;
+  initialSceneReady = false;
+  heatmapIdleHandle = null;
 }

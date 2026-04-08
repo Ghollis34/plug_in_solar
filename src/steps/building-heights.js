@@ -1,17 +1,32 @@
 import { getState, setState } from '../utils/state.js';
-import { calcHeight, formatHeight, buildingPresets } from '../utils/buildings.js';
-import { captureBuildingAtLocation, captureNearbyBuildings, createStepMap, drawBuildingFootprintPreview } from '../utils/map-helpers.js';
-import { degreesToCompass, latLngToMeters, metersToLatLng } from '../utils/geometry.js';
+import {
+  captureBuildingAtLocation,
+  captureNearbyBuildings,
+  createStepMap,
+  drawBuildingFootprintPreview,
+  drawObstacles,
+  normalizeObstacles,
+} from '../utils/map-helpers.js';
+import { degreesToCompass, latLngToMeters, metersToLatLng, normalizeDegrees } from '../utils/geometry.js';
 
 let map = null;
 let mapLoaded = false;
 let draftCenter = null;
+let draftFootprint = null;
 let draftFrontDoorFacing = null;
 let nearbyBuildings = [];
+let drawnObstacles = [];
+let obstacleCounter = 0;
+let selectedObstacleId = null;
+let activeObstacleTool = 'fence';
+let pendingPlacement = null;
+let fenceStartPoint = null;
 
 const DEFAULT_WIDTH_M = 5;
 const DEFAULT_DEPTH_M = 9;
+const DEFAULT_HEIGHT_M = 7.2;
 const NUDGE_STEP_M = 1.5;
+const OBSTACLE_NUDGE_STEP_M = 0.5;
 const FRONT_DOOR_OPTIONS = [
   { label: 'N', deg: 0 },
   { label: 'NE', deg: 45 },
@@ -22,55 +37,59 @@ const FRONT_DOOR_OPTIONS = [
   { label: 'W', deg: 270 },
   { label: 'NW', deg: 315 },
 ];
+const SHED_DIRECTION_OPTIONS = FRONT_DOOR_OPTIONS;
+const obstacleTools = [
+  { id: 'fence', label: 'Fence', icon: '🟧' },
+  { id: 'tree', label: 'Tree', icon: '🌳' },
+  { id: 'shed', label: 'Shed / Wall', icon: '⬜' },
+];
 
 export function render() {
-  const location = getState('location');
   const building = (getState('buildings') || [])[0] || {};
-  const floors = building.floors || 2;
-  const pitched = Boolean(building.pitched);
-  const height = calcHeight(floors, pitched);
   const facing = building.frontDoorFacing;
   const facingValue = facing ?? 180;
+  const obstacleCount = (getState('obstacles') || []).length;
 
   return `
-    <div class="step-page">
+    <div class="step-page step-page-map">
       <div class="step-header">
-        <h2 class="step-title">🏗️ Set Building Height & Direction</h2>
-        <p class="step-subtitle">Tune the house footprint a bit more precisely so the shade model has a better anchor.</p>
+        <div class="section-kicker">Step 2 · Site Setup</div>
+        <h2 class="step-title">Confirm Property & Site Obstacles</h2>
+        <p class="step-subtitle">Lock the house outline to the right building, then add any fences, sheds, or trees that could affect panel placement.</p>
       </div>
 
       <div class="step-body full-width">
         <div class="map-container" id="buildings-map"></div>
+        <div class="map-overlay-bottom map-overlay-bottom-legend">
+          <div class="map-legend-title">Site setup</div>
+          <div class="map-legend-copy">Match the outlined property to your house, then add the fixed site obstacles around it. These carry forward into panel placement and shadow analysis.</div>
+        </div>
 
-        <div class="map-overlay-panel">
-          <h4 style="margin-bottom: 12px;">Your Building</h4>
+        <div class="map-placement-banner hidden" id="site-setup-banner">
+          <span id="site-setup-banner-text">Click the map to place</span>
+          <button class="btn btn-sm btn-secondary" id="btn-cancel-site-placement" style="padding: 4px 12px; font-size: 0.75rem;">✕ Cancel</button>
+        </div>
 
-          <div class="form-group mb-md">
-            <label class="form-label">Quick presets</label>
-            <div class="building-preset-grid">
-              ${buildingPresets.map((preset, i) => `
-                <div class="building-preset ${preset.floors === floors && preset.pitched === pitched ? 'active' : ''}" data-preset="${i}">
-                  <div class="preset-icon">${preset.icon}</div>
-                  <div class="preset-label">${preset.label}</div>
-                  <div class="preset-height">${formatHeight(calcHeight(preset.floors, preset.pitched))}</div>
-                </div>
-              `).join('')}
+        <div class="map-overlay-panel map-overlay-panel-building">
+          <div class="map-panel-header">
+            <div>
+              <div class="map-panel-kicker">Site Setup</div>
+              <h3 class="map-panel-title">Property Outline & Obstacles</h3>
             </div>
+            <div class="map-panel-pill">${obstacleCount} saved</div>
           </div>
 
-          <div class="form-group mb-md">
-            <label class="form-label">Number of floors</label>
-            <input type="number" class="form-input" id="floor-count" min="1" max="10" value="${floors}" />
-          </div>
-
-          <div class="toggle-wrapper mb-md" id="pitched-toggle">
-            <div class="toggle ${pitched ? 'active' : ''}" id="pitched-btn"></div>
-            <span>Pitched roof (adds loft height)</span>
+          <div class="metric-glass-card metric-glass-card-compact">
+            <div>
+              <div class="metric-glass-label">Selected property</div>
+              <div class="metric-glass-value">Outline locked</div>
+            </div>
+            <div class="metric-glass-note" id="nearby-buildings-note">Checking neighbouring buildings nearby…</div>
           </div>
 
           <div class="form-group mb-md">
             <div class="flex justify-between items-center" style="margin-bottom: 8px;">
-              <label class="form-label">Front door direction</label>
+              <label class="form-label">Property facing</label>
               <button class="btn btn-sm btn-secondary" id="btn-clear-direction" type="button" style="padding: 6px 10px; font-size: 0.75rem;">
                 Clear
               </button>
@@ -93,13 +112,13 @@ export function render() {
 
             <div class="analysis-note" id="direction-note" style="margin-top: 10px;">
               ${facing == null
-                ? 'Leave this unset if you are unsure. We will lower confidence and use a more conservative house model.'
-                : `Front door set to ${degreesToCompass(facing, 'long')}. Use the slider if the 8-point compass is too coarse.`}
+                ? 'Only needed if the map footprint is weak or missing. Otherwise we will use the detected building outline directly.'
+                : `Reference direction set to ${degreesToCompass(facing, 'long')}. We will use it as a fallback for wall snaps if the map outline is incomplete.`}
             </div>
           </div>
 
           <div class="form-group mb-md">
-            <label class="form-label">Footprint position</label>
+            <label class="form-label">Property position</label>
             <div class="nudge-grid">
               <button class="direction-chip" data-nudge="north" type="button">↑</button>
               <button class="direction-chip" data-nudge="west" type="button">←</button>
@@ -108,30 +127,104 @@ export function render() {
               <button class="direction-chip" data-nudge="south" type="button">↓</button>
             </div>
             <div class="analysis-note" id="position-note" style="margin-top: 10px;">
-              Start with the postcode pin, then nudge the outline until it sits roughly over the house.
+              Start with the detected property, then nudge the outline if the footprint is slightly off.
             </div>
           </div>
 
-          <div class="sun-score" style="margin-bottom: 16px;">
-            <div class="sun-score-value" id="height-display">${formatHeight(height)}</div>
-            <div class="sun-score-label">Estimated building height</div>
+          <div class="card-flat card-flat-subtle" style="padding: 12px; margin-bottom: 12px;">
+            <div style="font-weight: 600; margin-bottom: 4px;">What to add here</div>
+            <div style="font-size: 0.85rem; color: var(--text-secondary);">
+              Draw fences, sheds, and trees that are fixed parts of the site. The next step is only for candidate panel locations.
+            </div>
           </div>
 
-        <div class="card-flat" style="padding: 12px; margin-bottom: 12px;">
-          <div style="font-weight: 600; margin-bottom: 4px;">Assumed footprint</div>
-          <div style="font-size: 0.85rem; color: var(--text-secondary);">
-              ${DEFAULT_WIDTH_M}m wide × ${DEFAULT_DEPTH_M}m deep. The dashed outline updates as you tweak direction or nudge position.
+          <div class="form-group mb-md">
+            <label class="form-label">Selected obstacle position</label>
+            <div class="nudge-grid">
+              <button class="direction-chip" data-obstacle-nudge="north" type="button">↑</button>
+              <button class="direction-chip" data-obstacle-nudge="west" type="button">←</button>
+              <button class="direction-chip" data-obstacle-nudge="clear" type="button">Done</button>
+              <button class="direction-chip" data-obstacle-nudge="east" type="button">→</button>
+              <button class="direction-chip" data-obstacle-nudge="south" type="button">↓</button>
+            </div>
+            <div class="analysis-note" id="obstacle-position-note" style="margin-top: 10px;">
+              Select an obstacle below, then nudge it around the map.
+            </div>
           </div>
-        </div>
 
-          <div class="analysis-note" id="nearby-buildings-note" style="margin-bottom: 12px;">
-            Nearby buildings within roughly 100m will also be included in the shade model.
+          <div class="form-group mb-md">
+            <label class="form-label">Obstacle type</label>
+            <div class="direction-grid">
+              ${obstacleTools.map((tool) => `
+                <button class="direction-chip ${tool.id === activeObstacleTool ? 'active' : ''}" data-obstacle-tool="${tool.id}">
+                  ${tool.icon} ${tool.label}
+                </button>
+              `).join('')}
+            </div>
           </div>
 
-          <div class="disclaimer">
-            <span class="disclaimer-icon">ℹ️</span>
-            <span>This is still approximate, but it is enough to stop obvious north-side placements being overstated.</span>
+          <div class="obstacle-form ${activeObstacleTool === 'fence' ? '' : 'hidden'}" data-config-tool="fence">
+            <div class="form-group mb-md">
+              <label class="form-label">Fence height (m)</label>
+              <input type="number" class="form-input" id="fence-height" min="0.5" max="5" step="0.1" value="1.8" />
+            </div>
           </div>
+
+          <div class="obstacle-form hidden" data-config-tool="tree">
+            <div class="form-group mb-md">
+              <label class="form-label">Tree height (m)</label>
+              <input type="number" class="form-input" id="tree-height" min="1" max="30" step="0.5" value="5" />
+            </div>
+            <div class="form-group mb-md">
+              <label class="form-label">Canopy radius (m)</label>
+              <input type="number" class="form-input" id="tree-radius" min="1" max="15" step="0.5" value="3" />
+            </div>
+          </div>
+
+          <div class="obstacle-form hidden" data-config-tool="shed">
+            <div class="form-group mb-md">
+              <label class="form-label">Height (m)</label>
+              <input type="number" class="form-input" id="shed-height" min="1" max="10" step="0.1" value="2.5" />
+            </div>
+            <div class="form-group mb-md">
+              <label class="form-label">Width (m)</label>
+              <input type="number" class="form-input" id="shed-width" min="1" max="20" step="0.5" value="3" />
+            </div>
+            <div class="form-group mb-md">
+              <label class="form-label">Depth (m)</label>
+              <input type="number" class="form-input" id="shed-depth" min="1" max="20" step="0.5" value="2" />
+            </div>
+            <div class="form-group mb-md">
+              <label class="form-label">Front face direction</label>
+              <div class="direction-grid">
+                ${SHED_DIRECTION_OPTIONS.map((option) => `
+                  <button class="direction-chip ${option.deg === 0 ? 'active' : ''}" data-shed-rotation="${option.deg}" type="button">
+                    ${option.label}
+                  </button>
+                `).join('')}
+              </div>
+              <div class="flex items-center gap-md" style="margin-top: 12px;">
+                <input type="range" class="range-slider" id="shed-rotation-slider" min="0" max="355" step="5" value="0" />
+                <span id="shed-rotation-value" style="min-width: 112px; text-align: right; font-weight: 600;">North (0°)</span>
+              </div>
+              <div class="analysis-note" id="shed-rotation-note" style="margin-top: 10px;">
+                Set the shed face direction before you place it on the map.
+              </div>
+            </div>
+          </div>
+
+          <button class="btn btn-primary w-full mb-md" id="btn-place-obstacle">
+            🟧 Draw Fence
+          </button>
+          <button class="btn btn-secondary w-full mb-md hidden" id="btn-cancel-fence">
+            ✕ Cancel Drawing
+          </button>
+
+          <div class="analysis-note mb-md" id="site-setup-status">
+            Confirm the property outline, then add any fences, sheds, or trees that could affect shading.
+          </div>
+
+          <div id="obstacles-list"></div>
         </div>
       </div>
 
@@ -152,13 +245,19 @@ export function init() {
     lat: Number.isFinite(building.lat) ? building.lat : location.lat,
     lng: Number.isFinite(building.lng) ? building.lng : location.lng,
   };
+  draftFootprint = building.footprint || null;
   draftFrontDoorFacing = Number.isFinite(building.frontDoorFacing) ? building.frontDoorFacing : null;
+  drawnObstacles = normalizeObstacles(getState('obstacles') || []);
+  obstacleCounter = drawnObstacles.length;
+  selectedObstacleId = null;
 
   initMap(location);
   initControls();
-  updateHeight();
   updateDirectionUI();
   updatePositionNote();
+  updateObstaclePositionNote();
+  updateObstaclesList();
+  setActiveObstacleTool(activeObstacleTool);
 
   document.getElementById('btn-back-buildings')?.addEventListener('click', () => {
     window.dispatchEvent(new CustomEvent('wizard:back'));
@@ -171,48 +270,31 @@ export function init() {
 }
 
 function initMap(location) {
+  const initialCenter = draftCenter || location;
   map = createStepMap({
     container: 'buildings-map',
-    center: [location.lng, location.lat],
-    zoom: 17,
-    pitch: 50,
-    bearing: -20,
+    center: [initialCenter.lng, initialCenter.lat],
+    zoom: 18.2,
+    pitch: 56,
+    bearing: -18,
     onLoad: () => {
       mapLoaded = true;
-      captureNeighborBuildings();
-      updateDirectionPreview();
+      refreshObstaclesAfterSettledPaint();
+      map.once('idle', () => {
+        focusMapOnDetectedBuilding(location);
+      });
     },
+  });
+
+  map.on('click', (event) => {
+    handleMapClick(event.lngLat.lat, event.lngLat.lng);
   });
 }
 
 function initControls() {
-  const floorInput = document.getElementById('floor-count');
-  const pitchedBtn = document.getElementById('pitched-btn');
-
-  floorInput?.addEventListener('input', updateHeight);
-
-  document.getElementById('pitched-toggle')?.addEventListener('click', () => {
-    pitchedBtn?.classList.toggle('active');
-    updateHeight();
-  });
-
-  document.querySelectorAll('.building-preset').forEach((el) => {
-    el.addEventListener('click', () => {
-      const idx = parseInt(el.dataset.preset, 10);
-      const preset = buildingPresets[idx];
-      if (!preset) return;
-
-      floorInput.value = preset.floors;
-      pitchedBtn?.classList.toggle('active', preset.pitched);
-      document.querySelectorAll('.building-preset').forEach((presetEl) => presetEl.classList.remove('active'));
-      el.classList.add('active');
-      updateHeight();
-    });
-  });
-
   document.querySelectorAll('.direction-chip[data-facing]').forEach((button) => {
     button.addEventListener('click', () => {
-      const facing = parseInt(button.dataset.facing, 10);
+      const facing = parseInt(button.dataset.facing || '', 10);
       setFrontDoorFacing(Number.isFinite(facing) ? facing : null);
     });
   });
@@ -233,6 +315,47 @@ function initControls() {
       nudgeBuilding(button.dataset.nudge);
     });
   });
+
+  document.querySelectorAll('[data-obstacle-nudge]').forEach((button) => {
+    button.addEventListener('click', () => {
+      nudgeSelectedObstacle(button.dataset.obstacleNudge);
+    });
+  });
+
+  document.querySelectorAll('[data-obstacle-tool]').forEach((button) => {
+    button.addEventListener('click', () => {
+      setActiveObstacleTool(button.dataset.obstacleTool);
+    });
+  });
+
+  document.querySelectorAll('[data-shed-rotation]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const value = parseInt(button.dataset.shedRotation || '', 10);
+      setShedRotation(Number.isFinite(value) ? value : 0);
+    });
+  });
+
+  document.getElementById('shed-rotation-slider')?.addEventListener('input', (event) => {
+    const value = parseInt(event.target.value, 10);
+    setShedRotation(Number.isFinite(value) ? value : 0);
+  });
+
+  document.getElementById('btn-place-obstacle')?.addEventListener('click', () => {
+    setPendingPlacement(activeObstacleTool);
+  });
+
+  document.getElementById('btn-cancel-fence')?.addEventListener('click', () => {
+    cancelPlacement();
+    updateSetupStatus('Drawing cancelled.');
+  });
+
+  document.getElementById('btn-cancel-site-placement')?.addEventListener('click', () => {
+    cancelPlacement();
+    updateSetupStatus('Placement cancelled.');
+  });
+
+  document.addEventListener('keydown', handleEscapeKey);
+  updateShedRotationUI();
 }
 
 function setFrontDoorFacing(value) {
@@ -247,6 +370,9 @@ function nudgeBuilding(direction) {
 
   if (direction === 'reset') {
     draftCenter = { lat: location.lat, lng: location.lng };
+    draftFootprint = null;
+    focusMapOnDetectedBuilding(location);
+    return;
   } else {
     let dx = 0;
     let dy = 0;
@@ -257,17 +383,13 @@ function nudgeBuilding(direction) {
     if (direction === 'west') dx = -NUDGE_STEP_M;
 
     draftCenter = metersToLatLng(draftCenter.lat, draftCenter.lng, dx, dy);
+    if (draftFootprint?.length) {
+      draftFootprint = draftFootprint.map((point) => metersToLatLng(point.lat, point.lng, dx, dy));
+    }
   }
 
   updatePositionNote();
   updateDirectionPreview();
-}
-
-function updateHeight() {
-  const floors = parseInt(document.getElementById('floor-count')?.value, 10) || 2;
-  const pitched = document.getElementById('pitched-btn')?.classList.contains('active') || false;
-  const height = calcHeight(floors, pitched);
-  document.getElementById('height-display').textContent = formatHeight(height);
 }
 
 function updateDirectionUI() {
@@ -280,7 +402,7 @@ function updateDirectionUI() {
   }
 
   document.querySelectorAll('.direction-chip[data-facing]').forEach((chip) => {
-    chip.classList.toggle('active', parseInt(chip.dataset.facing, 10) === draftFrontDoorFacing);
+    chip.classList.toggle('active', parseInt(chip.dataset.facing || '', 10) === draftFrontDoorFacing);
   });
 
   if (valueEl) {
@@ -291,8 +413,8 @@ function updateDirectionUI() {
 
   if (noteEl) {
     noteEl.textContent = draftFrontDoorFacing == null
-      ? 'Leave this unset if you are unsure. We will lower confidence and use a more conservative house model.'
-      : `Front door set to ${degreesToCompass(draftFrontDoorFacing, 'long')}. Use the slider if the 8-point compass is too coarse.`;
+      ? 'Only needed if the map footprint is weak or missing. Otherwise we will use the detected building outline directly.'
+      : `Reference direction set to ${degreesToCompass(draftFrontDoorFacing, 'long')}. We will use it as a fallback for wall snaps if the map outline is incomplete.`;
   }
 }
 
@@ -308,7 +430,7 @@ function updatePositionNote() {
   const northSouthMeters = Math.abs(offset.dy).toFixed(1);
 
   if (eastWestMeters === '0.0' && northSouthMeters === '0.0') {
-    noteEl.textContent = 'Outline is centred on the postcode pin.';
+    noteEl.textContent = 'Outline is centred on the detected property.';
     return;
   }
 
@@ -324,48 +446,583 @@ function updateDirectionPreview() {
     widthM: DEFAULT_WIDTH_M,
     depthM: DEFAULT_DEPTH_M,
     frontDoorFacing: draftFrontDoorFacing,
+    footprint: draftFootprint,
   });
+}
+
+function focusMapOnDetectedBuilding(location) {
+  if (!map || !draftCenter) return;
+
+  const detectedBuilding = captureBuildingAtLocation(map, draftCenter, { searchRadiusM: 32 });
+  const targetCenter = detectedBuilding
+    ? { lat: detectedBuilding.lat, lng: detectedBuilding.lng }
+    : draftCenter;
+
+  draftCenter = targetCenter;
+  draftFootprint = detectedBuilding?.footprint || draftFootprint;
+
+  const finalizeFocus = () => {
+    updatePositionNote();
+    updateDirectionPreview();
+    captureNeighborBuildings();
+    refreshObstaclesAfterSettledPaint();
+  };
+
+  let completed = false;
+  let fallbackTimer = null;
+  const finish = () => {
+    if (completed) return;
+    completed = true;
+    map.off('moveend', handleMoveEnd);
+    if (fallbackTimer) {
+      window.clearTimeout(fallbackTimer);
+      fallbackTimer = null;
+    }
+    finalizeFocus();
+  };
+  const handleMoveEnd = () => {
+    finish();
+  };
+
+  if (detectedBuilding?.footprint?.length) {
+    const bounds = getFootprintBounds(detectedBuilding.footprint);
+    if (bounds) {
+      map.on('moveend', handleMoveEnd);
+      fallbackTimer = window.setTimeout(finish, 1100);
+      try {
+        map.fitBounds(bounds, {
+          padding: { top: 88, right: 92, bottom: 88, left: 470 },
+          maxZoom: 19.8,
+          bearing: -18,
+          pitch: 58,
+          duration: 900,
+          essential: true,
+        });
+      } catch (error) {
+        finish();
+      }
+      return;
+    }
+  }
+
+  map.on('moveend', handleMoveEnd);
+  fallbackTimer = window.setTimeout(finish, 1050);
+  try {
+    map.easeTo({
+      center: [targetCenter.lng, targetCenter.lat],
+      zoom: 19.1,
+      pitch: 58,
+      bearing: -18,
+      duration: 850,
+      essential: true,
+    });
+  } catch (error) {
+    finish();
+  }
 }
 
 function captureNeighborBuildings() {
   if (!map || !draftCenter) return;
 
-  nearbyBuildings = captureNearbyBuildings(map, draftCenter, { radiusM: 100, excludeRadiusM: 12 });
+  const detectedBuilding = captureBuildingAtLocation(map, draftCenter, { searchRadiusM: 28 });
+  nearbyBuildings = captureNearbyBuildings(map, draftCenter, {
+    radiusM: 100,
+    excludeContainingCenter: !detectedBuilding?.footprint?.length,
+    excludeFootprint: detectedBuilding?.footprint?.length
+      ? detectedBuilding.footprint.map(({ lat, lng }) => [lng, lat])
+      : null,
+  });
+
   const noteEl = document.getElementById('nearby-buildings-note');
   if (noteEl) {
     noteEl.textContent = nearbyBuildings.length > 0
-      ? `${nearbyBuildings.length} neighbouring buildings detected within roughly 100m and will be considered for shading.`
-      : 'No neighbouring buildings were detected in the current view, so only your building and manual obstacles will be used.';
+      ? `${nearbyBuildings.length} neighbouring buildings detected within roughly 100m and included in the shade model.`
+      : 'No neighbouring buildings were detected in the current view, so only your property and manual obstacles will be used.';
   }
 }
 
+function setActiveObstacleTool(tool) {
+  activeObstacleTool = obstacleTools.find((entry) => entry.id === tool)?.id || 'fence';
+  cancelPlacement();
+
+  document.querySelectorAll('[data-obstacle-tool]').forEach((button) => {
+    button.classList.toggle('active', button.dataset.obstacleTool === activeObstacleTool);
+  });
+
+  document.querySelectorAll('[data-config-tool]').forEach((panel) => {
+    panel.classList.toggle('hidden', panel.dataset.configTool !== activeObstacleTool);
+  });
+
+  const actionBtn = document.getElementById('btn-place-obstacle');
+  if (actionBtn) {
+    if (activeObstacleTool === 'tree') actionBtn.textContent = '🌳 Place Tree';
+    else if (activeObstacleTool === 'shed') actionBtn.textContent = '⬜ Place Shed / Wall';
+    else actionBtn.textContent = '🟧 Draw Fence';
+  }
+}
+
+function setPendingPlacement(mode) {
+  if (pendingPlacement === mode && (mode !== 'fence' || fenceStartPoint == null)) {
+    cancelPlacement();
+    return;
+  }
+
+  pendingPlacement = mode;
+  fenceStartPoint = null;
+
+  if (map) {
+    map.getCanvas().style.cursor = 'crosshair';
+  }
+
+  if (mode === 'tree') {
+    showPlacementBanner('🌳 Click the map to place the tree');
+    updateSetupStatus('Click on the map to place the tree marker.');
+  } else if (mode === 'shed') {
+    showPlacementBanner('⬜ Click the map to place the shed centre');
+    updateSetupStatus('Click on the map to place the shed footprint centre.');
+  } else {
+    showPlacementBanner('🟧 Click the fence start point');
+    updateSetupStatus('Click the fence start point, then click the fence end point.');
+  }
+
+  updateCancelFenceButton();
+}
+
+function cancelPlacement() {
+  pendingPlacement = null;
+  fenceStartPoint = null;
+
+  if (map) {
+    map.getCanvas().style.cursor = '';
+  }
+
+  hidePlacementBanner();
+  updateCancelFenceButton();
+}
+
+function handleMapClick(lat, lng) {
+  if (!pendingPlacement) return;
+
+  if (pendingPlacement === 'tree') {
+    addTree(lat, lng);
+    cancelPlacement();
+    updateSetupStatus('Tree added.');
+    return;
+  }
+
+  if (pendingPlacement === 'shed') {
+    addShed(lat, lng);
+    cancelPlacement();
+    updateSetupStatus('Shed footprint added.');
+    return;
+  }
+
+  if (!fenceStartPoint) {
+    fenceStartPoint = { lat, lng };
+    updateSetupStatus('Fence start locked. Click the second point to finish the line.');
+    showPlacementBanner('🟧 Click the fence end point (Esc to cancel)');
+    updateCancelFenceButton();
+    return;
+  }
+
+  addFence(fenceStartPoint, { lat, lng });
+  cancelPlacement();
+  updateSetupStatus('Fence added.');
+}
+
+function addFence(startPoint, endPoint) {
+  obstacleCounter += 1;
+  const obstacle = {
+    id: `obstacle-${obstacleCounter}`,
+    type: 'fence',
+    points: [startPoint, endPoint],
+    heightM: parseFloat(document.getElementById('fence-height')?.value || 1.8),
+  };
+  drawnObstacles.push(obstacle);
+  selectedObstacleId = obstacle.id;
+  refreshObstacles();
+  updateObstaclePositionNote();
+  updateObstaclesList();
+}
+
+function addTree(lat, lng) {
+  obstacleCounter += 1;
+  const obstacle = {
+    id: `obstacle-${obstacleCounter}`,
+    type: 'tree',
+    lat,
+    lng,
+    heightM: parseFloat(document.getElementById('tree-height')?.value || 5),
+    canopyRadiusM: parseFloat(document.getElementById('tree-radius')?.value || 3),
+  };
+  drawnObstacles.push(obstacle);
+  selectedObstacleId = obstacle.id;
+  refreshObstacles();
+  updateObstaclePositionNote();
+  updateObstaclesList();
+}
+
+function addShed(lat, lng) {
+  obstacleCounter += 1;
+  const obstacle = {
+    id: `obstacle-${obstacleCounter}`,
+    type: 'shed',
+    lat,
+    lng,
+    heightM: parseFloat(document.getElementById('shed-height')?.value || 2.5),
+    widthM: parseFloat(document.getElementById('shed-width')?.value || 3),
+    depthM: parseFloat(document.getElementById('shed-depth')?.value || 2),
+    rotationDeg: getShedRotation(),
+  };
+  drawnObstacles.push(obstacle);
+  selectedObstacleId = obstacle.id;
+  refreshObstacles();
+  updateObstaclePositionNote();
+  updateObstaclesList();
+}
+
+function refreshObstacles() {
+  if (map?.isStyleLoaded()) {
+    drawObstacles(map, drawnObstacles);
+  }
+}
+
+function refreshObstaclesDeferred() {
+  if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        refreshObstacles();
+      });
+    });
+    return;
+  }
+
+  window.setTimeout(() => {
+    refreshObstacles();
+  }, 0);
+}
+
+function refreshObstaclesAfterSettledPaint() {
+  if (!map) return;
+
+  let completed = false;
+  const finish = () => {
+    if (completed) return;
+    completed = true;
+    refreshObstaclesDeferred();
+  };
+
+  refreshObstacles();
+
+  if (typeof map.once === 'function') {
+    map.once('idle', finish);
+    window.setTimeout(finish, 180);
+    return;
+  }
+
+  finish();
+}
+
+function updateObstaclesList() {
+  const listEl = document.getElementById('obstacles-list');
+  if (!listEl) return;
+
+  if (drawnObstacles.length === 0) {
+    listEl.innerHTML = '';
+    return;
+  }
+
+  listEl.innerHTML = `
+    <h4 style="margin: 10px 0 10px; font-size: 0.9rem; color: var(--text-secondary);">
+      Saved Obstacles (${drawnObstacles.length})
+    </h4>
+    ${drawnObstacles.map((obstacle) => `
+      <div class="card-flat compact-row ${obstacle.id === selectedObstacleId ? 'analysis-card-best' : ''}">
+        <div>
+          <strong style="font-size: 0.85rem;">${formatObstacleLabel(obstacle)}</strong>
+          <div style="font-size: 0.75rem; color: var(--text-muted);">
+            ${formatObstacleDetails(obstacle)}
+          </div>
+        </div>
+        <div class="obstacle-action-group">
+          <button class="btn btn-sm btn-outline select-obstacle-btn" data-id="${obstacle.id}" style="padding: 4px 10px; font-size: 0.75rem;">
+            ${obstacle.id === selectedObstacleId ? 'Selected' : 'Move'}
+          </button>
+          ${obstacle.type === 'shed' ? `
+            <button class="btn btn-sm btn-outline rotate-obstacle-btn" data-id="${obstacle.id}" data-rotate="-15" style="padding: 4px 10px; font-size: 0.75rem;">↺ 15°</button>
+            <button class="btn btn-sm btn-outline rotate-obstacle-btn" data-id="${obstacle.id}" data-rotate="15" style="padding: 4px 10px; font-size: 0.75rem;">↻ 15°</button>
+          ` : ''}
+          <button class="btn btn-sm btn-secondary remove-obstacle-btn" data-id="${obstacle.id}" style="padding: 4px 10px; font-size: 0.75rem;">✕</button>
+        </div>
+      </div>
+    `).join('')}
+  `;
+
+  listEl.querySelectorAll('.select-obstacle-btn').forEach((button) => {
+    button.addEventListener('click', () => {
+      selectObstacle(button.dataset.id);
+    });
+  });
+
+  listEl.querySelectorAll('.rotate-obstacle-btn').forEach((button) => {
+    button.addEventListener('click', () => {
+      const delta = parseInt(button.dataset.rotate || '0', 10);
+      if (!Number.isFinite(delta)) return;
+      rotateShed(button.dataset.id, delta);
+    });
+  });
+
+  listEl.querySelectorAll('.remove-obstacle-btn').forEach((button) => {
+    button.addEventListener('click', () => {
+      const id = button.dataset.id;
+      drawnObstacles = drawnObstacles.filter((obstacle) => obstacle.id !== id);
+      if (selectedObstacleId === id) {
+        selectedObstacleId = null;
+      }
+      refreshObstacles();
+      updateObstaclePositionNote();
+      updateObstaclesList();
+    });
+  });
+}
+
+function selectObstacle(obstacleId) {
+  selectedObstacleId = obstacleId;
+  updateObstaclePositionNote();
+  updateObstaclesList();
+}
+
+function rotateShed(obstacleId, deltaDeg) {
+  drawnObstacles = drawnObstacles.map((obstacle) => {
+    if (obstacle.id !== obstacleId || obstacle.type !== 'shed') {
+      return obstacle;
+    }
+
+    return {
+      ...obstacle,
+      rotationDeg: normalizeDegrees((obstacle.rotationDeg || 0) + deltaDeg),
+    };
+  });
+
+  selectedObstacleId = obstacleId;
+  refreshObstacles();
+  updateObstaclePositionNote();
+  updateObstaclesList();
+}
+
+function nudgeSelectedObstacle(direction) {
+  if (direction === 'clear') {
+    selectedObstacleId = null;
+    updateObstaclePositionNote();
+    updateObstaclesList();
+    return;
+  }
+
+  if (!selectedObstacleId) return;
+
+  let dx = 0;
+  let dy = 0;
+
+  if (direction === 'north') dy = OBSTACLE_NUDGE_STEP_M;
+  if (direction === 'south') dy = -OBSTACLE_NUDGE_STEP_M;
+  if (direction === 'east') dx = OBSTACLE_NUDGE_STEP_M;
+  if (direction === 'west') dx = -OBSTACLE_NUDGE_STEP_M;
+  if (!dx && !dy) return;
+
+  drawnObstacles = drawnObstacles.map((obstacle) => moveObstacle(obstacle, obstacle.id === selectedObstacleId ? dx : 0, obstacle.id === selectedObstacleId ? dy : 0));
+  refreshObstacles();
+  updateSetupStatus(`${formatSelectedObstacleLabel()} moved ${Math.abs(dx || dy).toFixed(1)}m.`);
+  updateObstaclePositionNote();
+  updateObstaclesList();
+}
+
+function moveObstacle(obstacle, dx, dy) {
+  if (!dx && !dy) return obstacle;
+
+  if (obstacle.type === 'tree' || obstacle.type === 'shed') {
+    const moved = metersToLatLng(obstacle.lat, obstacle.lng, dx, dy);
+    return {
+      ...obstacle,
+      lat: moved.lat,
+      lng: moved.lng,
+    };
+  }
+
+  if (obstacle.type === 'fence' && obstacle.points?.length >= 2) {
+    return {
+      ...obstacle,
+      points: obstacle.points.map((point) => metersToLatLng(point.lat, point.lng, dx, dy)),
+    };
+  }
+
+  return obstacle;
+}
+
+function formatObstacleLabel(obstacle) {
+  if (obstacle.type === 'tree') return '🌳 Tree';
+  if (obstacle.type === 'shed') return '⬜ Shed / Wall';
+  return '🟧 Fence';
+}
+
+function formatObstacleDetails(obstacle) {
+  if (obstacle.type === 'tree') {
+    return `${obstacle.heightM}m high · ${obstacle.canopyRadiusM}m canopy radius`;
+  }
+
+  if (obstacle.type === 'shed') {
+    return `${obstacle.widthM}m × ${obstacle.depthM}m · ${obstacle.heightM}m high · facing ${degreesToCompass(obstacle.rotationDeg || 0, 'long')} (${Math.round(obstacle.rotationDeg || 0)}°)`;
+  }
+
+  return `${obstacle.heightM}m high line`;
+}
+
+function setShedRotation(value) {
+  const slider = document.getElementById('shed-rotation-slider');
+  if (slider) {
+    slider.value = String(value);
+  }
+  updateShedRotationUI();
+}
+
+function getShedRotation() {
+  const value = parseInt(document.getElementById('shed-rotation-slider')?.value || 0, 10);
+  return Number.isFinite(value) ? value : 0;
+}
+
+function updateShedRotationUI() {
+  const rotation = getShedRotation();
+  const valueEl = document.getElementById('shed-rotation-value');
+  const noteEl = document.getElementById('shed-rotation-note');
+
+  document.querySelectorAll('[data-shed-rotation]').forEach((chip) => {
+    chip.classList.toggle('active', parseInt(chip.dataset.shedRotation || '', 10) === rotation);
+  });
+
+  if (valueEl) {
+    valueEl.textContent = `${degreesToCompass(rotation, 'long')} (${rotation}°)`;
+  }
+
+  if (noteEl) {
+    noteEl.textContent = `Shed front set to ${degreesToCompass(rotation, 'long')}. Place it on the map when the direction looks right.`;
+  }
+}
+
+function updateSetupStatus(message) {
+  const statusEl = document.getElementById('site-setup-status');
+  if (statusEl) {
+    statusEl.textContent = message;
+  }
+}
+
+function updateObstaclePositionNote() {
+  const noteEl = document.getElementById('obstacle-position-note');
+  if (!noteEl) return;
+
+  if (!selectedObstacleId) {
+    noteEl.textContent = 'Select an obstacle below, then nudge it around the map.';
+    return;
+  }
+
+  noteEl.textContent = `${formatSelectedObstacleLabel()} selected. Use the arrows to reposition it in ${OBSTACLE_NUDGE_STEP_M.toFixed(1)}m steps.`;
+}
+
+function formatSelectedObstacleLabel() {
+  const obstacle = drawnObstacles.find((entry) => entry.id === selectedObstacleId);
+  if (!obstacle) return 'Obstacle';
+  return formatObstacleLabel(obstacle).replace(/^[^\w]+/u, '').trim();
+}
+
+function showPlacementBanner(text) {
+  const banner = document.getElementById('site-setup-banner');
+  const bannerText = document.getElementById('site-setup-banner-text');
+  if (banner) {
+    banner.classList.remove('hidden');
+    if (bannerText) bannerText.textContent = text;
+  }
+}
+
+function hidePlacementBanner() {
+  const banner = document.getElementById('site-setup-banner');
+  if (banner) {
+    banner.classList.add('hidden');
+  }
+}
+
+function updateCancelFenceButton() {
+  const cancelBtn = document.getElementById('btn-cancel-fence');
+  if (cancelBtn) {
+    const showCancel = pendingPlacement === 'fence' || fenceStartPoint != null;
+    cancelBtn.classList.toggle('hidden', !showCancel);
+  }
+}
+
+function handleEscapeKey(event) {
+  if (event.key === 'Escape' && (pendingPlacement || fenceStartPoint)) {
+    cancelPlacement();
+    updateSetupStatus('Placement cancelled.');
+  }
+}
+
+function getFootprintBounds(footprint) {
+  if (!footprint?.length) return null;
+
+  let west = Number.POSITIVE_INFINITY;
+  let east = Number.NEGATIVE_INFINITY;
+  let south = Number.POSITIVE_INFINITY;
+  let north = Number.NEGATIVE_INFINITY;
+
+  footprint.forEach((point) => {
+    if (!Number.isFinite(point?.lat) || !Number.isFinite(point?.lng)) return;
+    west = Math.min(west, point.lng);
+    east = Math.max(east, point.lng);
+    south = Math.min(south, point.lat);
+    north = Math.max(north, point.lat);
+  });
+
+  if (![west, east, south, north].every(Number.isFinite)) {
+    return null;
+  }
+
+  return [[west, south], [east, north]];
+}
+
 function saveBuilding() {
-  const floors = parseInt(document.getElementById('floor-count')?.value, 10) || 2;
-  const pitched = document.getElementById('pitched-btn')?.classList.contains('active') || false;
-  const height = calcHeight(floors, pitched);
+  const previousBuilding = (getState('buildings') || [])[0] || {};
   const detectedBuilding = map ? captureBuildingAtLocation(map, draftCenter, { searchRadiusM: 28 }) : null;
+  const refreshedNearbyBuildings = map
+    ? captureNearbyBuildings(map, draftCenter, {
+      radiusM: 100,
+      excludeContainingCenter: !detectedBuilding?.footprint?.length,
+      excludeFootprint: detectedBuilding?.footprint?.length
+        ? detectedBuilding.footprint.map(({ lat, lng }) => [lng, lat])
+        : null,
+    })
+    : nearbyBuildings;
+
+  nearbyBuildings = refreshedNearbyBuildings;
 
   setState({
     buildings: [
       {
         id: 'user-building',
         kind: 'user',
-        floors,
-        pitched,
-        height,
+        height: detectedBuilding?.height || previousBuilding.height || DEFAULT_HEIGHT_M,
         lat: draftCenter?.lat,
         lng: draftCenter?.lng,
         widthM: DEFAULT_WIDTH_M,
         depthM: DEFAULT_DEPTH_M,
         frontDoorFacing: draftFrontDoorFacing,
-        footprint: detectedBuilding?.footprint || null,
+        footprint: draftFootprint || detectedBuilding?.footprint || null,
       },
-      ...nearbyBuildings,
+      ...refreshedNearbyBuildings,
     ],
+    obstacles: drawnObstacles,
   });
 }
 
 export function cleanup() {
+  document.removeEventListener('keydown', handleEscapeKey);
+
   if (map) {
     map.remove();
     map = null;
@@ -373,6 +1030,13 @@ export function cleanup() {
 
   mapLoaded = false;
   draftCenter = null;
+  draftFootprint = null;
   draftFrontDoorFacing = null;
   nearbyBuildings = [];
+  drawnObstacles = [];
+  obstacleCounter = 0;
+  selectedObstacleId = null;
+  activeObstacleTool = 'fence';
+  pendingPlacement = null;
+  fenceStartPoint = null;
 }

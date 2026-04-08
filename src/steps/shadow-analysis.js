@@ -1,7 +1,7 @@
 import maplibregl from 'maplibre-gl';
 import { getState, setState } from '../utils/state.js';
 import { getSunTimes, getMapLightFromSun, getShadowOverlayFeatures, rankSpaces, samplePlacementHeatmap } from '../utils/sun.js';
-import { createPanelMarkerElement, createStepMap, drawDynamicShadows, drawObstacles, drawSuitabilityHeatmap, updatePanelMarkerElement } from '../utils/map-helpers.js';
+import { createPanelMarkerElement, createStepMap, drawDynamicShadows, drawObstacles, drawSuitabilityHeatmap, getShadeModelBuildings, updatePanelMarkerElement } from '../utils/map-helpers.js';
 
 let map = null;
 let animationFrame = null;
@@ -15,17 +15,26 @@ export function render() {
   const currentMonth = new Date().getMonth();
 
   return `
-    <div class="step-page">
+    <div class="step-page step-page-map">
       <div class="step-header">
-        <h2 class="step-title">☀️ Shadow Analysis</h2>
+        <div class="section-kicker">Step 4 · Shadows</div>
+        <h2 class="step-title">Shadow Analysis</h2>
         <p class="step-subtitle">See visible moving shadows, compare candidate spots, and choose the one you want the ROI to use.</p>
       </div>
 
       <div class="step-body full-width">
         <div class="map-container" id="shadow-map"></div>
 
-        <div class="map-overlay-panel">
+        <div class="map-overlay-panel map-overlay-panel-shadow">
           <div class="shadow-controls">
+            <div class="map-panel-header">
+              <div>
+                <div class="map-panel-kicker">Sun Path Controls</div>
+                <h3 class="map-panel-title">Adjust time and season</h3>
+              </div>
+              <div class="map-panel-pill">Live shadow overlay</div>
+            </div>
+
             <div class="time-display" id="time-display">12:00</div>
 
             <div class="form-group">
@@ -66,21 +75,23 @@ export function render() {
                 <span style="font-size: 0.85rem; font-weight: 600;" id="sunset-time">--:--</span>
               </div>
             </div>
-
-            <div id="best-spot-result" class="hidden">
-              <div class="sun-score">
-                <div class="sun-score-value" id="best-spot-hours">--</div>
-                <div class="sun-score-label" id="best-spot-label">Analysing sun exposure...</div>
-              </div>
-              <div class="analysis-note" id="best-spot-meta" style="margin-top: 8px;"></div>
-            </div>
-
-            <div class="analysis-note" style="margin-top: 10px;">
-              Green heatmap areas have the strongest year-round direct sun. Dark overlays show the current simulated shadow footprint for the selected time.
-            </div>
-
-            <div id="spaces-ranking" class="hidden"></div>
           </div>
+        </div>
+
+        <div class="map-overlay-panel map-overlay-panel-right map-overlay-panel-ranking">
+          <div id="best-spot-result" class="hidden">
+            <div class="sun-score">
+              <div class="sun-score-value" id="best-spot-hours">--</div>
+              <div class="sun-score-label" id="best-spot-label">Analysing sun exposure...</div>
+            </div>
+            <div class="analysis-note" id="best-spot-meta" style="margin-top: 8px;"></div>
+          </div>
+
+          <div class="analysis-note" style="margin-top: 10px;">
+            Green heatmap areas have the strongest year-round direct sun. Dark overlays show the current simulated shadow footprint for the selected time.
+          </div>
+
+          <div id="spaces-ranking" class="hidden"></div>
         </div>
       </div>
 
@@ -115,16 +126,18 @@ export function init() {
 }
 
 function initMap(location) {
+  const analysisCenter = getAnalysisCenter(location, getState('buildings') || []);
   map = createStepMap({
     container: 'shadow-map',
-    center: [location.lng, location.lat],
-    zoom: 17,
+    center: [analysisCenter.lng, analysisCenter.lat],
+    zoom: 18.4,
     pitch: 55,
-    bearing: -30,
+    bearing: -24,
     onLoad: () => {
       addSpaceMarkers();
       drawObstacles(map, getState('obstacles') || []);
-      drawSuitabilityHeatmap(map, samplePlacementHeatmap(location.lat, location.lng, getState('buildings') || [], getState('obstacles') || []));
+      const center = getAnalysisCenter(location, getState('buildings') || []);
+      drawSuitabilityHeatmap(map, samplePlacementHeatmap(center.lat, center.lng, getAnalysisBuildings(location), getState('obstacles') || []));
       updateShadows();
     },
   });
@@ -202,7 +215,7 @@ function updateShadows() {
   if (!location || !map) return;
 
   const time = getTimeFromSlider();
-  const buildings = getState('buildings') || [];
+  const buildings = getAnalysisBuildings(location);
   const obstacles = getState('obstacles') || [];
   const lightProps = getMapLightFromSun(time, location.lat, location.lng);
 
@@ -223,6 +236,23 @@ function updateShadows() {
       // Some style/light combinations still ignore setLight; the analysis itself is unaffected.
     }
   }
+}
+
+function getAnalysisBuildings(location) {
+  const buildings = getState('buildings') || [];
+  return getShadeModelBuildings(map, buildings, {
+    center: getAnalysisCenter(location, buildings),
+    radiusM: 120,
+  });
+}
+
+function getAnalysisCenter(location, buildings) {
+  const userBuilding = buildings.find((building) => building.kind === 'user' || building.id === 'user-building');
+  if (Number.isFinite(userBuilding?.lat) && Number.isFinite(userBuilding?.lng)) {
+    return { lat: userBuilding.lat, lng: userBuilding.lng };
+  }
+
+  return { lat: location.lat, lng: location.lng };
 }
 
 function updateSunInfo() {
@@ -276,7 +306,7 @@ function stopAnimation() {
 function runAnalysis() {
   const location = getState('location');
   const spaces = getState('spaces') || [];
-  const buildings = getState('buildings') || [];
+  const buildings = getAnalysisBuildings(location);
   const obstacles = getState('obstacles') || [];
 
   if (spaces.length === 0) return;

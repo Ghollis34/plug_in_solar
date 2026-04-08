@@ -8,37 +8,54 @@ let searchTimeout = null;
 
 export function render() {
   return `
-    <div class="step-page">
+    <div class="step-page step-page-map">
       <div class="step-header">
-        <h2 class="step-title">📍 Find Your Location</h2>
-        <p class="step-subtitle">Search your UK postcode or address to see your property in 3D</p>
+        <div class="section-kicker">Step 1 · Location</div>
+        <h2 class="step-title">Find Your Location</h2>
+        <p class="step-subtitle">Search your UK postcode or address, then confirm the property in 3D before you model the building and panel spots.</p>
       </div>
 
       <div class="step-body full-width">
         <div class="map-container" id="location-map"></div>
+        <div class="map-overlay-bottom map-overlay-bottom-legend">
+          <div class="map-legend-title">Map guide</div>
+          <div class="map-legend-copy">Drag to pan, scroll to zoom, and right- or middle-drag to rotate in 3D. Use the compass to reset north-up after you orbit the map.</div>
+        </div>
 
-        <div class="map-overlay-panel">
+        <div class="map-overlay-panel map-overlay-panel-location">
+          <div class="map-panel-header">
+            <div>
+              <div class="map-panel-kicker">Property Search</div>
+              <h3 class="map-panel-title">Choose the building you want to assess</h3>
+            </div>
+            <div class="map-panel-pill">UK only</div>
+          </div>
+
           <div class="form-group mb-md">
             <label class="form-label">Search postcode or address</label>
-            <div class="search-wrapper">
+            <div class="search-wrapper search-wrapper-premium">
               <span class="search-icon">🔍</span>
-              <input type="text" class="form-input" id="location-search" 
-                     placeholder="e.g. SW1A 1AA or 10 Downing Street" 
+              <input type="text" class="form-input" id="location-search"
+                     placeholder="e.g. SW1A 1AA or 10 Downing Street"
                      autocomplete="off" />
               <div class="search-results hidden" id="search-results"></div>
             </div>
           </div>
 
-          <div id="location-info" class="hidden">
-            <div class="card-flat" style="padding: 14px;">
-              <div style="font-weight: 600; margin-bottom: 4px;" id="location-name"></div>
-              <div style="font-size: 0.8rem; color: var(--text-muted);" id="location-coords"></div>
+          <div id="location-info" class="location-selection-card hidden">
+            <div class="location-selection-topline">
+              <div>
+                <div class="location-selection-title" id="location-name"></div>
+                <div class="location-selection-meta">Selected property</div>
+              </div>
+              <span class="location-selection-status">Confirmed</span>
             </div>
+            <div class="location-selection-coords" id="location-coords"></div>
           </div>
 
           <div class="disclaimer mt-md">
             <span class="disclaimer-icon">ℹ️</span>
-            <span>Use the mouse to tilt the map (right-click drag) and see buildings in 3D. Scroll to zoom in.</span>
+            <span>Click directly on the map if you want to pin a building manually. Orbit the map until the building shape looks right, then use the compass if you need to re-orient north-up.</span>
           </div>
         </div>
       </div>
@@ -70,7 +87,7 @@ export function init() {
   const searchInput = document.getElementById('location-search');
   if (saved) {
     setTimeout(() => {
-      setLocation(saved.lat, saved.lng, saved.displayName);
+      setLocation(saved.lat, saved.lng, saved.displayName, { preserveDownstream: true });
       if (searchInput) searchInput.value = saved.displayName || '';
     }, 500);
   } else if (searchInput) {
@@ -200,10 +217,22 @@ async function reverseGeocode(lat, lng) {
   }
 }
 
-function setLocation(lat, lng, displayName) {
+function setLocation(lat, lng, displayName, options = {}) {
+  const preserveDownstream = options.preserveDownstream === true;
+
   // Update state
   setState({
-    location: { lat, lng, displayName }
+    location: { lat, lng, displayName },
+    ...(preserveDownstream ? {} : {
+      buildings: [],
+      spaces: [],
+      obstacles: [],
+      sunAnalysis: null,
+      results: null,
+      selectedSpaceId: null,
+      selectedKit: null,
+      maxVisitedStep: 1,
+    }),
   });
 
   // Update UI

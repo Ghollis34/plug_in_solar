@@ -1,5 +1,5 @@
 import maplibregl from 'maplibre-gl';
-import { distancePointToSegment, getRectangleRing, latLngToMeters, pointInPolygon } from './geometry.js';
+import { distancePointToSegment, getRectangleRing, latLngToMeters, metersToLatLng, pointInPolygon } from './geometry.js';
 
 const DEFAULT_STYLE = 'https://tiles.openfreemap.org/styles/bright';
 const BUILDING_LAYER_ID = '3d-buildings';
@@ -11,9 +11,12 @@ const BUILDING_PREVIEW_FILL_ID = 'building-preview-fill';
 const BUILDING_PREVIEW_OUTLINE_ID = 'building-preview-outline';
 const HEATMAP_SOURCE_ID = 'sun-suitability-source';
 const HEATMAP_LAYER_ID = 'sun-suitability-layer';
+const HEATMAP_OUTLINE_ID = 'sun-suitability-outline';
 const SHADOW_SOURCE_ID = 'dynamic-shadow-source';
 const SHADOW_FILL_ID = 'dynamic-shadow-fill';
 const SHADOW_OUTLINE_ID = 'dynamic-shadow-outline';
+const MAP_INTERACTION_HINT_CLASS = 'map-interaction-hint';
+const EMPTY_FEATURE_COLLECTION = { type: 'FeatureCollection', features: [] };
 
 const ESRI_TILE_URL = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
 const ESRI_ATTRIBUTION = 'Powered by Esri | Sources: Esri, Vantor, Earthstar Geographics, GIS User Community';
@@ -28,6 +31,8 @@ export function createStepMap({
   style = DEFAULT_STYLE,
   satelliteToggle = true,
   satelliteDefault = false,
+  interactionHint = true,
+  interactionHintText,
   onLoad,
 }) {
   const map = new maplibregl.Map({
@@ -41,6 +46,7 @@ export function createStepMap({
   });
 
   map.addControl(new maplibregl.NavigationControl(), 'bottom-right');
+  enableMiddleButtonOrbit(map);
 
   map.on('load', () => {
     add3DBuildings(map);
@@ -51,6 +57,10 @@ export function createStepMap({
       if (satelliteDefault) {
         setSatelliteActive(map, true);
       }
+    }
+
+    if (interactionHint) {
+      addMapInteractionHint(map, interactionHintText);
     }
 
     onLoad?.(map);
@@ -155,8 +165,11 @@ export function setSatelliteActive(map, active) {
 
   // Boost heatmap contrast over satellite imagery
   if (map.getLayer(HEATMAP_LAYER_ID)) {
-    map.setPaintProperty(HEATMAP_LAYER_ID, 'heatmap-opacity', active ? 0.78 : 0.52);
-    map.setPaintProperty(HEATMAP_LAYER_ID, 'heatmap-intensity', active ? 1.5 : 1.1);
+    map.setPaintProperty(HEATMAP_LAYER_ID, 'fill-opacity', active ? 0.54 : 0.38);
+  }
+
+  if (map.getLayer(HEATMAP_OUTLINE_ID)) {
+    map.setPaintProperty(HEATMAP_OUTLINE_ID, 'line-opacity', active ? 0.2 : 0.12);
   }
 
   const toggle = map.getContainer().querySelector(`.${SATELLITE_TOGGLE_CLASS}`);
@@ -226,8 +239,10 @@ export function clearBuildingFootprintPreview(map) {
 }
 
 export function drawObstacles(map, obstacles = []) {
+  const normalizedObstacles = normalizeObstacles(obstacles);
   const sourceDefs = [
     ['obstacle-fences', 'obstacle-fences-source'],
+    ['obstacle-fence-outline', 'obstacle-fences-source'],
     ['obstacle-trees', 'obstacle-trees-source'],
     ['obstacle-sheds', 'obstacle-sheds-source'],
     ['obstacle-shed-outline', 'obstacle-sheds-source'],
@@ -236,20 +251,21 @@ export function drawObstacles(map, obstacles = []) {
   sourceDefs.forEach(([layerId]) => removeLayerIfExists(map, layerId));
   ['obstacle-fences-source', 'obstacle-trees-source', 'obstacle-sheds-source'].forEach(id => removeSourceIfExists(map, id));
 
-  if (!obstacles.length) return;
+  if (!normalizedObstacles.length) return;
 
   const fenceFeatures = [];
   const treeFeatures = [];
   const shedFeatures = [];
 
-  obstacles.forEach((obs) => {
+  normalizedObstacles.forEach((obs) => {
     if (obs.type === 'fence' && obs.points?.length >= 2) {
+      const ring = getBufferedFenceRing(obs.points[0], obs.points[1], 0.2);
       fenceFeatures.push({
         type: 'Feature',
         properties: { id: obs.id, heightM: obs.heightM, label: `Fence ${obs.heightM}m` },
         geometry: {
-          type: 'LineString',
-          coordinates: obs.points.map((point) => [point.lng, point.lat]),
+          type: 'Polygon',
+          coordinates: [ring.map((point) => [point.lng, point.lat])],
         },
       });
     } else if (obs.type === 'tree' && Number.isFinite(obs.lat) && Number.isFinite(obs.lng)) {
@@ -286,12 +302,23 @@ export function drawObstacles(map, obstacles = []) {
 
     map.addLayer({
       id: 'obstacle-fences',
+      type: 'fill-extrusion',
+      source: 'obstacle-fences-source',
+      paint: {
+        'fill-extrusion-color': '#F97316',
+        'fill-extrusion-height': ['coalesce', ['get', 'heightM'], 1.8],
+        'fill-extrusion-base': 0,
+        'fill-extrusion-opacity': 0.72,
+      },
+    });
+
+    map.addLayer({
+      id: 'obstacle-fence-outline',
       type: 'line',
       source: 'obstacle-fences-source',
       paint: {
-        'line-color': '#F97316',
-        'line-width': 4,
-        'line-dasharray': [2, 1],
+        'line-color': '#FDBA74',
+        'line-width': 1.6,
         'line-opacity': 0.9,
       },
     });
@@ -308,8 +335,14 @@ export function drawObstacles(map, obstacles = []) {
       type: 'circle',
       source: 'obstacle-trees-source',
       paint: {
-        'circle-color': 'rgba(34, 197, 94, 0.28)',
-        'circle-radius': 12,
+        'circle-color': 'rgba(34, 197, 94, 0.32)',
+        'circle-radius': [
+          'interpolate',
+          ['linear'],
+          ['zoom'],
+          16, ['+', 6, ['*', ['coalesce', ['get', 'canopyRadiusM'], 3], 1.4]],
+          20, ['+', 14, ['*', ['coalesce', ['get', 'canopyRadiusM'], 3], 2.7]],
+        ],
         'circle-stroke-color': '#22C55E',
         'circle-stroke-width': 2,
       },
@@ -324,10 +357,13 @@ export function drawObstacles(map, obstacles = []) {
 
     map.addLayer({
       id: 'obstacle-sheds',
-      type: 'fill',
+      type: 'fill-extrusion',
       source: 'obstacle-sheds-source',
       paint: {
-        'fill-color': 'rgba(148, 163, 184, 0.28)',
+        'fill-extrusion-color': '#94A3B8',
+        'fill-extrusion-height': ['coalesce', ['get', 'heightM'], 2.5],
+        'fill-extrusion-base': 0,
+        'fill-extrusion-opacity': 0.62,
       },
     });
 
@@ -341,10 +377,114 @@ export function drawObstacles(map, obstacles = []) {
       },
     });
   }
+
+  forceMapRepaint(map);
+}
+
+export function normalizeObstacles(obstacles = []) {
+  if (!Array.isArray(obstacles)) return [];
+
+  return obstacles
+    .map((obstacle) => normalizeObstacle(obstacle))
+    .filter(Boolean);
+}
+
+function normalizeObstacle(obstacle) {
+  if (!obstacle || typeof obstacle !== 'object') return null;
+
+  if (obstacle.type === 'fence') {
+    const points = Array.isArray(obstacle.points)
+      ? obstacle.points
+        .map((point) => ({
+          lat: toFiniteNumber(point?.lat, NaN),
+          lng: toFiniteNumber(point?.lng, NaN),
+        }))
+        .filter((point) => Number.isFinite(point.lat) && Number.isFinite(point.lng))
+      : [];
+
+    if (points.length < 2) return null;
+
+    return {
+      ...obstacle,
+      points,
+      heightM: toFiniteNumber(obstacle.heightM, 1.8),
+    };
+  }
+
+  if (obstacle.type === 'tree') {
+    const lat = toFiniteNumber(obstacle.lat, NaN);
+    const lng = toFiniteNumber(obstacle.lng, NaN);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+
+    return {
+      ...obstacle,
+      lat,
+      lng,
+      heightM: toFiniteNumber(obstacle.heightM, 5),
+      canopyRadiusM: toFiniteNumber(obstacle.canopyRadiusM, 3),
+    };
+  }
+
+  if (obstacle.type === 'shed') {
+    const lat = toFiniteNumber(obstacle.lat, NaN);
+    const lng = toFiniteNumber(obstacle.lng, NaN);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+
+    return {
+      ...obstacle,
+      lat,
+      lng,
+      heightM: toFiniteNumber(obstacle.heightM, 2.5),
+      widthM: toFiniteNumber(obstacle.widthM, 3),
+      depthM: toFiniteNumber(obstacle.depthM, 2),
+      rotationDeg: toFiniteNumber(obstacle.rotationDeg, 0),
+    };
+  }
+
+  return null;
+}
+
+function getBufferedFenceRing(startPoint, endPoint, widthM = 0.2) {
+  const segment = latLngToMeters(startPoint.lat, startPoint.lng, endPoint.lat, endPoint.lng);
+  const length = Math.hypot(segment.dx, segment.dy);
+
+  if (!length) {
+    return getRectangleRing(startPoint.lat, startPoint.lng, widthM, widthM, 0);
+  }
+
+  const normalX = (-segment.dy / length) * (widthM / 2);
+  const normalY = (segment.dx / length) * (widthM / 2);
+
+  const corners = [
+    metersToLatLng(startPoint.lat, startPoint.lng, normalX, normalY),
+    metersToLatLng(startPoint.lat, startPoint.lng, segment.dx + normalX, segment.dy + normalY),
+    metersToLatLng(startPoint.lat, startPoint.lng, segment.dx - normalX, segment.dy - normalY),
+    metersToLatLng(startPoint.lat, startPoint.lng, -normalX, -normalY),
+  ];
+
+  return [...corners, corners[0]];
+}
+
+function forceMapRepaint(map) {
+  if (!map || typeof map.triggerRepaint !== 'function') return;
+
+  map.triggerRepaint();
+
+  if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+    window.requestAnimationFrame(() => {
+      map.triggerRepaint();
+    });
+  }
+}
+
+function toFiniteNumber(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
 }
 
 export function drawSuitabilityHeatmap(map, featureCollection) {
   removeLayerIfExists(map, HEATMAP_LAYER_ID);
+  removeLayerIfExists(map, HEATMAP_OUTLINE_ID);
   removeLayerIfExists(map, `${HEATMAP_LAYER_ID}-points`);
   removeSourceIfExists(map, HEATMAP_SOURCE_ID);
 
@@ -357,90 +497,92 @@ export function drawSuitabilityHeatmap(map, featureCollection) {
 
   map.addLayer({
     id: HEATMAP_LAYER_ID,
-    type: 'heatmap',
+    type: 'fill',
     source: HEATMAP_SOURCE_ID,
     paint: {
-      'heatmap-weight': [
+      'fill-color': [
         'interpolate',
         ['linear'],
         ['get', 'score'],
-        0, 0.1,
-        1, 1,
+        0, 'rgba(220, 38, 38, 0.62)',
+        0.28, 'rgba(249, 115, 22, 0.68)',
+        0.5, 'rgba(250, 204, 21, 0.72)',
+        0.72, 'rgba(132, 204, 22, 0.76)',
+        1, 'rgba(22, 163, 74, 0.82)',
       ],
-      'heatmap-intensity': 1.1,
-      'heatmap-radius': 26,
-      'heatmap-opacity': 0.52,
-      'heatmap-color': [
-        'interpolate',
-        ['linear'],
-        ['heatmap-density'],
-        0, 'rgba(0,0,0,0)',
-        0.15, 'rgba(220, 38, 38, 0.45)',
-        0.35, 'rgba(249, 115, 22, 0.55)',
-        0.55, 'rgba(250, 204, 21, 0.62)',
-        0.75, 'rgba(132, 204, 22, 0.7)',
-        1, 'rgba(22, 163, 74, 0.78)',
-      ],
+      'fill-opacity': isSatelliteActive(map) ? 0.58 : 0.42,
     },
   }, BUILDING_LAYER_ID);
 
   map.addLayer({
-    id: `${HEATMAP_LAYER_ID}-points`,
-    type: 'circle',
+    id: HEATMAP_OUTLINE_ID,
+    type: 'line',
     source: HEATMAP_SOURCE_ID,
     paint: {
-      'circle-radius': 4,
-      'circle-opacity': 0.16,
-      'circle-color': [
+      'line-color': [
         'interpolate',
         ['linear'],
         ['get', 'score'],
-        0, '#DC2626',
-        0.35, '#F97316',
-        0.6, '#FACC15',
-        0.8, '#84CC16',
-        1, '#16A34A',
+        0, 'rgba(220, 38, 38, 0.82)',
+        0.28, 'rgba(249, 115, 22, 0.82)',
+        0.5, 'rgba(250, 204, 21, 0.85)',
+        0.72, 'rgba(132, 204, 22, 0.88)',
+        1, 'rgba(22, 163, 74, 0.9)',
       ],
+      'line-width': 0.35,
+      'line-opacity': isSatelliteActive(map) ? 0.05 : 0.025,
     },
   }, BUILDING_LAYER_ID);
 }
 
 export function clearSuitabilityHeatmap(map) {
   removeLayerIfExists(map, HEATMAP_LAYER_ID);
+  removeLayerIfExists(map, HEATMAP_OUTLINE_ID);
   removeLayerIfExists(map, `${HEATMAP_LAYER_ID}-points`);
   removeSourceIfExists(map, HEATMAP_SOURCE_ID);
 }
 
 export function drawDynamicShadows(map, featureCollection) {
-  removeLayerIfExists(map, SHADOW_FILL_ID);
-  removeLayerIfExists(map, SHADOW_OUTLINE_ID);
-  removeSourceIfExists(map, SHADOW_SOURCE_ID);
+  const data = featureCollection?.type === 'FeatureCollection'
+    ? featureCollection
+    : EMPTY_FEATURE_COLLECTION;
 
-  if (!featureCollection?.features?.length) return;
+  ensureDynamicShadowLayers(map, data);
 
-  map.addSource(SHADOW_SOURCE_ID, {
-    type: 'geojson',
-    data: featureCollection,
-  });
+  const source = map.getSource(SHADOW_SOURCE_ID);
+  source?.setData(data);
+}
 
-  map.addLayer({
-    id: SHADOW_FILL_ID,
-    type: 'fill',
-    source: SHADOW_SOURCE_ID,
-    paint: {
-      'fill-color': 'rgba(15, 23, 42, 0.42)',
-    },
-  });
+function ensureDynamicShadowLayers(map, initialData = EMPTY_FEATURE_COLLECTION) {
+  if (!map.getSource(SHADOW_SOURCE_ID)) {
+    map.addSource(SHADOW_SOURCE_ID, {
+      type: 'geojson',
+      data: initialData,
+    });
+  }
 
-  map.addLayer({
-    id: SHADOW_OUTLINE_ID,
-    type: 'line',
-    source: SHADOW_SOURCE_ID,
-    paint: {
-      'line-color': 'rgba(15, 23, 42, 0.28)',
-      'line-width': 1.2,
-    },
-  });
+  if (!map.getLayer(SHADOW_FILL_ID)) {
+    map.addLayer({
+      id: SHADOW_FILL_ID,
+      type: 'fill',
+      source: SHADOW_SOURCE_ID,
+      paint: {
+        'fill-color': 'rgba(15, 23, 42, 0.42)',
+      },
+    });
+  }
+
+  if (!map.getLayer(SHADOW_OUTLINE_ID)) {
+    map.addLayer({
+      id: SHADOW_OUTLINE_ID,
+      type: 'line',
+      source: SHADOW_SOURCE_ID,
+      paint: {
+        'line-color': 'rgba(15, 23, 42, 0.28)',
+        'line-width': 1.2,
+      },
+    });
+  }
 }
 
 export function createPanelMarkerElement(space, options = {}) {
@@ -450,6 +592,7 @@ export function createPanelMarkerElement(space, options = {}) {
   el.className = `panel-marker${compact ? ' panel-marker-compact' : ''}`;
   el.innerHTML = `
     <span class="panel-marker-halo"></span>
+    <span class="panel-marker-surface"></span>
     <span class="panel-marker-card">
       <span class="panel-marker-grid"></span>
       <span class="panel-marker-icon">${space.typeIcon || '☀️'}</span>
@@ -471,6 +614,8 @@ export function updatePanelMarkerElement(element, space, options = {}) {
   element.classList.toggle('selected', selected);
   element.style.setProperty('--panel-rotation', `${rotation}deg`);
   element.setAttribute('aria-label', `${space.name || 'Panel location'} marker`);
+  element.dataset.spaceType = space.type || 'ground';
+  element.dataset.surfaceAligned = space.surfaceAligned ? 'true' : 'false';
 
   const icon = element.querySelector('.panel-marker-icon');
   if (icon) {
@@ -480,7 +625,8 @@ export function updatePanelMarkerElement(element, space, options = {}) {
 
 export function captureNearbyBuildings(map, center, options = {}) {
   const radiusM = options.radiusM ?? 100;
-  const excludeRadiusM = options.excludeRadiusM ?? 12;
+  const excludeContainingCenter = options.excludeContainingCenter === true;
+  const excludeFootprint = options.excludeFootprint ?? null;
 
   let features = [];
   try {
@@ -501,7 +647,11 @@ export function captureNearbyBuildings(map, center, options = {}) {
       const centroid = getRingCentroid(outerRing);
       const { dx, dy } = latLngToMeters(center.lat, center.lng, centroid.lat, centroid.lng);
       const distanceM = Math.hypot(dx, dy);
-      if (distanceM > radiusM || distanceM < excludeRadiusM) return;
+      if (distanceM > radiusM) return;
+
+      const footprintDistanceM = getDistanceFromCenterToRing(center, outerRing);
+      if (excludeContainingCenter && footprintDistanceM === 0) return;
+      if (excludeFootprint && areRingsLikelySameBuilding(excludeFootprint, outerRing)) return;
 
       const height = parseFloat(feature.properties?.render_height || feature.properties?.height || 8);
       const dedupeKey = `${centroid.lat.toFixed(6)}:${centroid.lng.toFixed(6)}:${Math.round(height)}`;
@@ -520,6 +670,36 @@ export function captureNearbyBuildings(map, center, options = {}) {
   });
 
   return buildings;
+}
+
+export function getShadeModelBuildings(map, existingBuildings = [], options = {}) {
+  if (!map) return existingBuildings;
+
+  const userBuilding = existingBuildings.find((building) => building.kind === 'user' || building.id === 'user-building') || null;
+  const center = options.center
+    || (userBuilding && Number.isFinite(userBuilding.lat) && Number.isFinite(userBuilding.lng)
+      ? { lat: userBuilding.lat, lng: userBuilding.lng }
+      : null);
+
+  if (!center) return existingBuildings;
+
+  const liveNearbyBuildings = captureNearbyBuildings(map, center, {
+    radiusM: options.radiusM ?? 120,
+    excludeContainingCenter: !userBuilding?.footprint?.length,
+    excludeFootprint: userBuilding?.footprint?.length ? userBuilding.footprint.map(({ lat, lng }) => [lng, lat]) : null,
+  });
+
+  const merged = [];
+  const seen = new Set();
+
+  [...existingBuildings, ...liveNearbyBuildings].forEach((building) => {
+    const key = createBuildingFingerprint(building);
+    if (seen.has(key)) return;
+    seen.add(key);
+    merged.push(building);
+  });
+
+  return merged;
 }
 
 export function captureBuildingAtLocation(map, center, options = {}) {
@@ -574,6 +754,77 @@ function removeSourceIfExists(map, sourceId) {
   if (map.getSource(sourceId)) {
     map.removeSource(sourceId);
   }
+}
+
+function addMapInteractionHint(map, customText) {
+  const container = map.getContainer();
+  if (container.querySelector(`.${MAP_INTERACTION_HINT_CLASS}`)) {
+    return;
+  }
+
+  const hint = document.createElement('div');
+  hint.className = MAP_INTERACTION_HINT_CLASS;
+  hint.innerHTML = customText
+    || '<strong>Map controls:</strong> drag to pan, scroll to zoom, and right- or middle-drag to rotate. Use the compass to return north-up.';
+  container.appendChild(hint);
+}
+
+function enableMiddleButtonOrbit(map) {
+  const canvas = map.getCanvas();
+  if (!canvas) return;
+
+  let dragState = null;
+
+  const handleMouseMove = (event) => {
+    if (!dragState) return;
+    const dx = event.clientX - dragState.startX;
+    const dy = event.clientY - dragState.startY;
+
+    map.stop();
+    map.jumpTo({
+      bearing: dragState.startBearing + (dx * 0.35),
+      pitch: clamp(dragState.startPitch - (dy * 0.24), 0, 80),
+    });
+  };
+
+  const handleMouseUp = () => {
+    if (!dragState) return;
+    dragState = null;
+    canvas.style.cursor = '';
+    window.removeEventListener('mousemove', handleMouseMove);
+    window.removeEventListener('mouseup', handleMouseUp);
+  };
+
+  const handleMouseDown = (event) => {
+    if (event.button !== 1) return;
+
+    event.preventDefault();
+    dragState = {
+      startX: event.clientX,
+      startY: event.clientY,
+      startBearing: map.getBearing(),
+      startPitch: map.getPitch(),
+    };
+
+    canvas.style.cursor = 'grabbing';
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+  };
+
+  const preventAuxClick = (event) => {
+    if (event.button === 1) {
+      event.preventDefault();
+    }
+  };
+
+  canvas.addEventListener('mousedown', handleMouseDown);
+  canvas.addEventListener('auxclick', preventAuxClick);
+
+  map.on('remove', () => {
+    handleMouseUp();
+    canvas.removeEventListener('mousedown', handleMouseDown);
+    canvas.removeEventListener('auxclick', preventAuxClick);
+  });
 }
 
 function getSatelliteInsertBeforeId(map) {
@@ -657,4 +908,27 @@ function getDistanceFromCenterToRing(center, outerRing) {
   }
 
   return minDistance;
+}
+
+function createBuildingFingerprint(building) {
+  return `${Number(building?.lat || 0).toFixed(6)}:${Number(building?.lng || 0).toFixed(6)}:${Math.round(Number(building?.height || 0))}`;
+}
+
+function areRingsLikelySameBuilding(referenceRing, candidateRing) {
+  if (!referenceRing?.length || !candidateRing?.length) return false;
+
+  const referenceCentroid = getRingCentroid(referenceRing);
+  const candidateCentroid = getRingCentroid(candidateRing);
+  const { dx, dy } = latLngToMeters(referenceCentroid.lat, referenceCentroid.lng, candidateCentroid.lat, candidateCentroid.lng);
+  const centroidDistanceM = Math.hypot(dx, dy);
+
+  if (centroidDistanceM > 4) return false;
+
+  const referenceDistance = getDistanceFromCenterToRing(referenceCentroid, candidateRing);
+  const candidateDistance = getDistanceFromCenterToRing(candidateCentroid, referenceRing);
+  return Math.max(referenceDistance, candidateDistance) < 4;
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
 }

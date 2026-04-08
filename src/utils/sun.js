@@ -35,9 +35,10 @@ export function getShadowLength(height, sunAltitude) {
 }
 
 export function getShadowDirection(sunAzimuth) {
-  // Shadow falls OPPOSITE to the sun direction
-  // sunAzimuth from SunCalc is radians from south CW → add 180° to flip
-  let dirDeg = (sunAzimuth * (180 / Math.PI)) + 180;
+  // SunCalc azimuth is measured from south, clockwise toward west.
+  // Converting that directly to a north-based compass bearing gives the
+  // shadow direction, because the 180° flip is already implicit.
+  let dirDeg = sunAzimuth * (180 / Math.PI);
   dirDeg = ((dirDeg % 360) + 360) % 360;
   return dirDeg;
 }
@@ -147,31 +148,51 @@ export function rankSpaces(lat, lng, spaces, buildings = [], obstacles = []) {
 
 export function samplePlacementHeatmap(centerLat, centerLng, buildings = [], obstacles = [], options = {}) {
   const radiusM = options.radiusM ?? 16;
-  const stepM = options.stepM ?? 4;
+  const stepM = options.stepM ?? 2.5;
+  const halfStep = stepM / 2;
   const year = new Date().getFullYear();
-  const sampleDates = [
-    { date: new Date(year, 2, 15), weight: 0.8 },
-    { date: new Date(year, 5, 21), weight: 1.1 },
-    { date: new Date(year, 8, 15), weight: 0.9 },
-    { date: new Date(year, 11, 15), weight: 0.6 },
-  ];
+  const fastMode = options.fastMode === true;
+  const sampleDates = fastMode
+    ? [
+      { date: new Date(year, 3, 15), weight: 0.9, hours: [9, 13, 16] },
+      { date: new Date(year, 5, 21), weight: 1.1, hours: [9, 13, 17] },
+    ]
+    : [
+      { date: new Date(year, 2, 15), weight: 0.8 },
+      { date: new Date(year, 5, 21), weight: 1.1 },
+      { date: new Date(year, 8, 15), weight: 0.9 },
+      { date: new Date(year, 11, 15), weight: 0.6 },
+    ];
 
   const features = [];
 
-  for (let dy = -radiusM; dy <= radiusM; dy += stepM) {
-    for (let dx = -radiusM; dx <= radiusM; dx += stepM) {
+  for (let dy = -radiusM + halfStep; dy <= radiusM - halfStep; dy += stepM) {
+    for (let dx = -radiusM + halfStep; dx <= radiusM - halfStep; dx += stepM) {
       const point = metersToLatLng(centerLat, centerLng, dx, dy);
-      const sample = getGuideSample(point.lat, point.lng, buildings, obstacles, sampleDates);
+      const sample = fastMode
+        ? getGuideSampleFast(point.lat, point.lng, buildings, obstacles, sampleDates)
+        : getGuideSample(point.lat, point.lng, buildings, obstacles, sampleDates);
+      const northWest = metersToLatLng(centerLat, centerLng, dx - halfStep, dy + halfStep);
+      const northEast = metersToLatLng(centerLat, centerLng, dx + halfStep, dy + halfStep);
+      const southEast = metersToLatLng(centerLat, centerLng, dx + halfStep, dy - halfStep);
+      const southWest = metersToLatLng(centerLat, centerLng, dx - halfStep, dy - halfStep);
 
       features.push({
         type: 'Feature',
         properties: {
           score: roundTo(sample.shadowFactor, 2),
           hours: roundTo(sample.avgHours, 1),
+          cellSizeM: stepM,
         },
         geometry: {
-          type: 'Point',
-          coordinates: [point.lng, point.lat],
+          type: 'Polygon',
+          coordinates: [[
+            [northWest.lng, northWest.lat],
+            [northEast.lng, northEast.lat],
+            [southEast.lng, southEast.lat],
+            [southWest.lng, southWest.lat],
+            [northWest.lng, northWest.lat],
+          ]],
         },
       });
     }
@@ -300,6 +321,50 @@ function getGuideSample(pointLat, pointLng, buildings, obstacles, sampleDates) {
     totalWeight += weight;
     weightedFactor += day.shadowFactor * weight;
     weightedHours += day.hours * weight;
+  });
+
+  return {
+    shadowFactor: totalWeight > 0 ? weightedFactor / totalWeight : 0,
+    avgHours: totalWeight > 0 ? weightedHours / totalWeight : 0,
+  };
+}
+
+function getGuideSampleFast(pointLat, pointLng, buildings, obstacles, sampleDates) {
+  const space = {
+    id: 'guide',
+    type: 'ground',
+    centerLat: pointLat,
+    centerLng: pointLng,
+  };
+
+  let totalWeight = 0;
+  let weightedFactor = 0;
+  let weightedHours = 0;
+
+  sampleDates.forEach(({ date, weight, hours = [] }) => {
+    let slotCount = 0;
+    let directSlots = 0;
+
+    hours.forEach((hour) => {
+      const sampleTime = new Date(date);
+      const wholeHour = Math.floor(hour);
+      const minutes = Math.round((hour - wholeHour) * 60);
+      sampleTime.setHours(wholeHour, minutes, 0, 0);
+
+      const pos = getSunPosition(sampleTime, pointLat, pointLng);
+      if (pos.altitudeDeg <= 0) return;
+
+      const strongestBlock = getStrongestObstruction(space, pos, buildings, obstacles);
+      directSlots += 1 - strongestBlock.amount;
+      slotCount += 1;
+    });
+
+    if (!slotCount) return;
+
+    const factor = directSlots / slotCount;
+    totalWeight += weight;
+    weightedFactor += factor * weight;
+    weightedHours += directSlots * 2.5 * weight;
   });
 
   return {
