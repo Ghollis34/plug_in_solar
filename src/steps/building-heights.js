@@ -1,13 +1,10 @@
 import { getState, setState } from '../utils/state.js';
-import {
-  captureBuildingAtLocation,
-  captureNearbyBuildings,
-  createStepMap,
-  drawBuildingFootprintPreview,
-  drawObstacles,
-  normalizeObstacles,
-} from '../utils/map-helpers.js';
 import { degreesToCompass, latLngToMeters, metersToLatLng, normalizeDegrees } from '../utils/geometry.js';
+import { FRONT_DOOR_OPTIONS, OBSTACLE_TOOLS, SHED_DIRECTION_OPTIONS } from '../utils/site-config.js';
+import { loadMapRuntime } from '../utils/map-runtime.js';
+import { renderObstacleList } from '../utils/obstacle-list.js';
+import { getSelectedObstacleLabel, moveObstacleById, rotateShedById } from '../utils/site-obstacle-state.js';
+import { getShedRotationValue, setShedRotationValue, syncShedRotationUI } from '../utils/shed-rotation.js';
 
 let map = null;
 let mapLoaded = false;
@@ -21,29 +18,19 @@ let selectedObstacleId = null;
 let activeObstacleTool = 'fence';
 let pendingPlacement = null;
 let fenceStartPoint = null;
+let mapInitToken = 0;
+let captureBuildingAtLocation = null;
+let captureNearbyBuildings = null;
+let createStepMap = null;
+let drawBuildingFootprintPreview = null;
+let drawObstacles = null;
+let normalizeObstacles = null;
 
 const DEFAULT_WIDTH_M = 5;
 const DEFAULT_DEPTH_M = 9;
 const DEFAULT_HEIGHT_M = 7.2;
 const NUDGE_STEP_M = 1.5;
 const OBSTACLE_NUDGE_STEP_M = 0.5;
-const FRONT_DOOR_OPTIONS = [
-  { label: 'N', deg: 0 },
-  { label: 'NE', deg: 45 },
-  { label: 'E', deg: 90 },
-  { label: 'SE', deg: 135 },
-  { label: 'S', deg: 180 },
-  { label: 'SW', deg: 225 },
-  { label: 'W', deg: 270 },
-  { label: 'NW', deg: 315 },
-];
-const SHED_DIRECTION_OPTIONS = FRONT_DOOR_OPTIONS;
-const obstacleTools = [
-  { id: 'fence', label: 'Fence', icon: '🟧' },
-  { id: 'tree', label: 'Tree', icon: '🌳' },
-  { id: 'shed', label: 'Shed / Wall', icon: '⬜' },
-];
-
 export function render() {
   const building = (getState('buildings') || [])[0] || {};
   const facing = building.frontDoorFacing;
@@ -60,6 +47,10 @@ export function render() {
 
       <div class="step-body full-width">
         <div class="map-container" id="buildings-map"></div>
+        <div class="map-loading-overlay" id="buildings-map-loading">
+          <div class="loading-spinner"></div>
+          <div id="buildings-map-loading-text">Loading site map…</div>
+        </div>
         <div class="map-overlay-bottom map-overlay-bottom-legend">
           <div class="map-legend-title">Site setup</div>
           <div class="map-legend-copy">Match the outlined property to your house, then add the fixed site obstacles around it. These carry forward into panel placement and shadow analysis.</div>
@@ -155,7 +146,7 @@ export function render() {
           <div class="form-group mb-md">
             <label class="form-label">Obstacle type</label>
             <div class="direction-grid">
-              ${obstacleTools.map((tool) => `
+              ${OBSTACLE_TOOLS.map((tool) => `
                 <button class="direction-chip ${tool.id === activeObstacleTool ? 'active' : ''}" data-obstacle-tool="${tool.id}">
                   ${tool.icon} ${tool.label}
                 </button>
@@ -240,25 +231,6 @@ export function init() {
   const location = getState('location');
   if (!location) return;
 
-  const building = (getState('buildings') || [])[0] || {};
-  draftCenter = {
-    lat: Number.isFinite(building.lat) ? building.lat : location.lat,
-    lng: Number.isFinite(building.lng) ? building.lng : location.lng,
-  };
-  draftFootprint = building.footprint || null;
-  draftFrontDoorFacing = Number.isFinite(building.frontDoorFacing) ? building.frontDoorFacing : null;
-  drawnObstacles = normalizeObstacles(getState('obstacles') || []);
-  obstacleCounter = drawnObstacles.length;
-  selectedObstacleId = null;
-
-  initMap(location);
-  initControls();
-  updateDirectionUI();
-  updatePositionNote();
-  updateObstaclePositionNote();
-  updateObstaclesList();
-  setActiveObstacleTool(activeObstacleTool);
-
   document.getElementById('btn-back-buildings')?.addEventListener('click', () => {
     window.dispatchEvent(new CustomEvent('wizard:back'));
   });
@@ -267,27 +239,83 @@ export function init() {
     saveBuilding();
     window.dispatchEvent(new CustomEvent('wizard:next'));
   });
+
+  const token = ++mapInitToken;
+  showSiteMapLoading('Loading site map…');
+
+  ensureMapRuntime()
+    .then(() => {
+      if (token !== mapInitToken) return;
+
+      const building = (getState('buildings') || [])[0] || {};
+      draftCenter = {
+        lat: Number.isFinite(building.lat) ? building.lat : location.lat,
+        lng: Number.isFinite(building.lng) ? building.lng : location.lng,
+      };
+      draftFootprint = building.footprint || null;
+      draftFrontDoorFacing = Number.isFinite(building.frontDoorFacing) ? building.frontDoorFacing : null;
+      drawnObstacles = normalizeObstacles(getState('obstacles') || []);
+      obstacleCounter = drawnObstacles.length;
+      selectedObstacleId = null;
+
+      return initMap(location, token);
+    })
+    .then(() => {
+      if (token !== mapInitToken) return;
+      initControls();
+      updateDirectionUI();
+      updatePositionNote();
+      updateObstaclePositionNote();
+      updateObstaclesList();
+      setActiveObstacleTool(activeObstacleTool);
+    })
+    .catch((error) => {
+      if (token !== mapInitToken) return;
+      console.error('Failed to load site setup map:', error);
+      showSiteMapLoading('Failed to load site map. Refresh or try again.');
+    });
 }
 
-function initMap(location) {
-  const initialCenter = draftCenter || location;
-  map = createStepMap({
-    container: 'buildings-map',
-    center: [initialCenter.lng, initialCenter.lat],
-    zoom: 18.2,
-    pitch: 56,
-    bearing: -18,
-    onLoad: () => {
-      mapLoaded = true;
-      refreshObstaclesAfterSettledPaint();
-      map.once('idle', () => {
-        focusMapOnDetectedBuilding(location);
-      });
-    },
-  });
+function ensureMapRuntime() {
+  if (createStepMap && normalizeObstacles) {
+    return Promise.resolve();
+  }
 
-  map.on('click', (event) => {
-    handleMapClick(event.lngLat.lat, event.lngLat.lng);
+  return loadMapRuntime().then((runtime) => {
+    captureBuildingAtLocation = runtime.captureBuildingAtLocation;
+    captureNearbyBuildings = runtime.captureNearbyBuildings;
+    createStepMap = runtime.createStepMap;
+    drawBuildingFootprintPreview = runtime.drawBuildingFootprintPreview;
+    drawObstacles = runtime.drawObstacles;
+    normalizeObstacles = runtime.normalizeObstacles;
+  });
+}
+
+function initMap(location, token) {
+  const initialCenter = draftCenter || location;
+  return new Promise((resolve) => {
+    map = createStepMap({
+      container: 'buildings-map',
+      center: [initialCenter.lng, initialCenter.lat],
+      zoom: 18.2,
+      pitch: 56,
+      bearing: -18,
+      onLoad: () => {
+        mapLoaded = true;
+        refreshObstaclesAfterSettledPaint();
+        map.once('idle', () => {
+          focusMapOnDetectedBuilding(location);
+          if (token === mapInitToken) {
+            hideSiteMapLoading();
+          }
+          resolve();
+        });
+      },
+    });
+
+    map.on('click', (event) => {
+      handleMapClick(event.lngLat.lat, event.lngLat.lng);
+    });
   });
 }
 
@@ -542,7 +570,7 @@ function captureNeighborBuildings() {
 }
 
 function setActiveObstacleTool(tool) {
-  activeObstacleTool = obstacleTools.find((entry) => entry.id === tool)?.id || 'fence';
+  activeObstacleTool = OBSTACLE_TOOLS.find((entry) => entry.id === tool)?.id || 'fence';
   cancelPlacement();
 
   document.querySelectorAll('[data-obstacle-tool]').forEach((button) => {
@@ -727,54 +755,14 @@ function updateObstaclesList() {
   const listEl = document.getElementById('obstacles-list');
   if (!listEl) return;
 
-  if (drawnObstacles.length === 0) {
-    listEl.innerHTML = '';
-    return;
-  }
-
-  listEl.innerHTML = `
-    <h4 style="margin: 10px 0 10px; font-size: 0.9rem; color: var(--text-secondary);">
-      Saved Obstacles (${drawnObstacles.length})
-    </h4>
-    ${drawnObstacles.map((obstacle) => `
-      <div class="card-flat compact-row ${obstacle.id === selectedObstacleId ? 'analysis-card-best' : ''}">
-        <div>
-          <strong style="font-size: 0.85rem;">${formatObstacleLabel(obstacle)}</strong>
-          <div style="font-size: 0.75rem; color: var(--text-muted);">
-            ${formatObstacleDetails(obstacle)}
-          </div>
-        </div>
-        <div class="obstacle-action-group">
-          <button class="btn btn-sm btn-outline select-obstacle-btn" data-id="${obstacle.id}" style="padding: 4px 10px; font-size: 0.75rem;">
-            ${obstacle.id === selectedObstacleId ? 'Selected' : 'Move'}
-          </button>
-          ${obstacle.type === 'shed' ? `
-            <button class="btn btn-sm btn-outline rotate-obstacle-btn" data-id="${obstacle.id}" data-rotate="-15" style="padding: 4px 10px; font-size: 0.75rem;">↺ 15°</button>
-            <button class="btn btn-sm btn-outline rotate-obstacle-btn" data-id="${obstacle.id}" data-rotate="15" style="padding: 4px 10px; font-size: 0.75rem;">↻ 15°</button>
-          ` : ''}
-          <button class="btn btn-sm btn-secondary remove-obstacle-btn" data-id="${obstacle.id}" style="padding: 4px 10px; font-size: 0.75rem;">✕</button>
-        </div>
-      </div>
-    `).join('')}
-  `;
-
-  listEl.querySelectorAll('.select-obstacle-btn').forEach((button) => {
-    button.addEventListener('click', () => {
-      selectObstacle(button.dataset.id);
-    });
-  });
-
-  listEl.querySelectorAll('.rotate-obstacle-btn').forEach((button) => {
-    button.addEventListener('click', () => {
-      const delta = parseInt(button.dataset.rotate || '0', 10);
-      if (!Number.isFinite(delta)) return;
-      rotateShed(button.dataset.id, delta);
-    });
-  });
-
-  listEl.querySelectorAll('.remove-obstacle-btn').forEach((button) => {
-    button.addEventListener('click', () => {
-      const id = button.dataset.id;
+  renderObstacleList(listEl, {
+    obstacles: drawnObstacles,
+    selectedObstacleId,
+    heading: drawnObstacles.length ? `Saved Obstacles (${drawnObstacles.length})` : null,
+    highlightSelected: true,
+    onSelect: selectObstacle,
+    onRotate: rotateShed,
+    onRemove: (id) => {
       drawnObstacles = drawnObstacles.filter((obstacle) => obstacle.id !== id);
       if (selectedObstacleId === id) {
         selectedObstacleId = null;
@@ -782,7 +770,7 @@ function updateObstaclesList() {
       refreshObstacles();
       updateObstaclePositionNote();
       updateObstaclesList();
-    });
+    },
   });
 }
 
@@ -793,17 +781,7 @@ function selectObstacle(obstacleId) {
 }
 
 function rotateShed(obstacleId, deltaDeg) {
-  drawnObstacles = drawnObstacles.map((obstacle) => {
-    if (obstacle.id !== obstacleId || obstacle.type !== 'shed') {
-      return obstacle;
-    }
-
-    return {
-      ...obstacle,
-      rotationDeg: normalizeDegrees((obstacle.rotationDeg || 0) + deltaDeg),
-    };
-  });
-
+  drawnObstacles = rotateShedById(drawnObstacles, obstacleId, deltaDeg);
   selectedObstacleId = obstacleId;
   refreshObstacles();
   updateObstaclePositionNote();
@@ -829,82 +807,23 @@ function nudgeSelectedObstacle(direction) {
   if (direction === 'west') dx = -OBSTACLE_NUDGE_STEP_M;
   if (!dx && !dy) return;
 
-  drawnObstacles = drawnObstacles.map((obstacle) => moveObstacle(obstacle, obstacle.id === selectedObstacleId ? dx : 0, obstacle.id === selectedObstacleId ? dy : 0));
+  drawnObstacles = moveObstacleById(drawnObstacles, selectedObstacleId, dx, dy);
   refreshObstacles();
   updateSetupStatus(`${formatSelectedObstacleLabel()} moved ${Math.abs(dx || dy).toFixed(1)}m.`);
   updateObstaclePositionNote();
   updateObstaclesList();
 }
 
-function moveObstacle(obstacle, dx, dy) {
-  if (!dx && !dy) return obstacle;
-
-  if (obstacle.type === 'tree' || obstacle.type === 'shed') {
-    const moved = metersToLatLng(obstacle.lat, obstacle.lng, dx, dy);
-    return {
-      ...obstacle,
-      lat: moved.lat,
-      lng: moved.lng,
-    };
-  }
-
-  if (obstacle.type === 'fence' && obstacle.points?.length >= 2) {
-    return {
-      ...obstacle,
-      points: obstacle.points.map((point) => metersToLatLng(point.lat, point.lng, dx, dy)),
-    };
-  }
-
-  return obstacle;
-}
-
-function formatObstacleLabel(obstacle) {
-  if (obstacle.type === 'tree') return '🌳 Tree';
-  if (obstacle.type === 'shed') return '⬜ Shed / Wall';
-  return '🟧 Fence';
-}
-
-function formatObstacleDetails(obstacle) {
-  if (obstacle.type === 'tree') {
-    return `${obstacle.heightM}m high · ${obstacle.canopyRadiusM}m canopy radius`;
-  }
-
-  if (obstacle.type === 'shed') {
-    return `${obstacle.widthM}m × ${obstacle.depthM}m · ${obstacle.heightM}m high · facing ${degreesToCompass(obstacle.rotationDeg || 0, 'long')} (${Math.round(obstacle.rotationDeg || 0)}°)`;
-  }
-
-  return `${obstacle.heightM}m high line`;
-}
-
 function setShedRotation(value) {
-  const slider = document.getElementById('shed-rotation-slider');
-  if (slider) {
-    slider.value = String(value);
-  }
-  updateShedRotationUI();
+  setShedRotationValue(value);
 }
 
 function getShedRotation() {
-  const value = parseInt(document.getElementById('shed-rotation-slider')?.value || 0, 10);
-  return Number.isFinite(value) ? value : 0;
+  return getShedRotationValue();
 }
 
 function updateShedRotationUI() {
-  const rotation = getShedRotation();
-  const valueEl = document.getElementById('shed-rotation-value');
-  const noteEl = document.getElementById('shed-rotation-note');
-
-  document.querySelectorAll('[data-shed-rotation]').forEach((chip) => {
-    chip.classList.toggle('active', parseInt(chip.dataset.shedRotation || '', 10) === rotation);
-  });
-
-  if (valueEl) {
-    valueEl.textContent = `${degreesToCompass(rotation, 'long')} (${rotation}°)`;
-  }
-
-  if (noteEl) {
-    noteEl.textContent = `Shed front set to ${degreesToCompass(rotation, 'long')}. Place it on the map when the direction looks right.`;
-  }
+  syncShedRotationUI();
 }
 
 function updateSetupStatus(message) {
@@ -927,9 +846,7 @@ function updateObstaclePositionNote() {
 }
 
 function formatSelectedObstacleLabel() {
-  const obstacle = drawnObstacles.find((entry) => entry.id === selectedObstacleId);
-  if (!obstacle) return 'Obstacle';
-  return formatObstacleLabel(obstacle).replace(/^[^\w]+/u, '').trim();
+  return getSelectedObstacleLabel(drawnObstacles, selectedObstacleId);
 }
 
 function showPlacementBanner(text) {
@@ -1020,7 +937,21 @@ function saveBuilding() {
   });
 }
 
+function showSiteMapLoading(message) {
+  const overlay = document.getElementById('buildings-map-loading');
+  const text = document.getElementById('buildings-map-loading-text');
+  if (text && message) {
+    text.textContent = message;
+  }
+  overlay?.classList.remove('hidden');
+}
+
+function hideSiteMapLoading() {
+  document.getElementById('buildings-map-loading')?.classList.add('hidden');
+}
+
 export function cleanup() {
+  mapInitToken += 1;
   document.removeEventListener('keydown', handleEscapeKey);
 
   if (map) {

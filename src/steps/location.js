@@ -1,10 +1,15 @@
-import maplibregl from 'maplibre-gl';
 import { getState, setState } from '../utils/state.js';
-import { createStepMap } from '../utils/map-helpers.js';
+import { loadMapRuntime } from '../utils/map-runtime.js';
 
 let map = null;
 let marker = null;
 let searchTimeout = null;
+let searchAbortController = null;
+let searchRequestId = 0;
+let outsideClickHandler = null;
+let mapInitToken = 0;
+let maplibregl = null;
+let createStepMap = null;
 
 export function render() {
   return `
@@ -17,6 +22,10 @@ export function render() {
 
       <div class="step-body full-width">
         <div class="map-container" id="location-map"></div>
+        <div class="map-loading-overlay" id="location-map-loading">
+          <div class="loading-spinner"></div>
+          <div id="location-map-loading-text">Loading UK map…</div>
+        </div>
         <div class="map-overlay-bottom map-overlay-bottom-legend">
           <div class="map-legend-title">Map guide</div>
           <div class="map-legend-copy">Drag to pan, scroll to zoom, and right- or middle-drag to rotate in 3D. Use the compass to reset north-up after you orbit the map.</div>
@@ -71,8 +80,33 @@ export function render() {
 }
 
 export function init() {
-  initMap();
+  const token = ++mapInitToken;
+  showLocationMapLoading('Loading UK map…');
   initSearch();
+
+  ensureMapRuntime()
+    .then(() => {
+      if (token !== mapInitToken) return;
+      return initMap(token);
+    })
+    .then(() => {
+      if (token !== mapInitToken) return;
+
+      // Restore saved location or clear stale input
+      const saved = getState('location');
+      const searchInput = document.getElementById('location-search');
+      if (saved) {
+        setLocation(saved.lat, saved.lng, saved.displayName, { preserveDownstream: true });
+        if (searchInput) searchInput.value = saved.displayName || '';
+      } else if (searchInput) {
+        searchInput.value = '';
+      }
+    })
+    .catch((error) => {
+      if (token !== mapInitToken) return;
+      console.error('Failed to load location map:', error);
+      showLocationMapLoading('Failed to load map. Refresh or try again.');
+    });
 
   document.getElementById('btn-back-location')?.addEventListener('click', () => {
     window.dispatchEvent(new CustomEvent('wizard:back'));
@@ -81,34 +115,40 @@ export function init() {
   document.getElementById('btn-next-location')?.addEventListener('click', () => {
     window.dispatchEvent(new CustomEvent('wizard:next'));
   });
-
-  // Restore saved location or clear stale input
-  const saved = getState('location');
-  const searchInput = document.getElementById('location-search');
-  if (saved) {
-    setTimeout(() => {
-      setLocation(saved.lat, saved.lng, saved.displayName, { preserveDownstream: true });
-      if (searchInput) searchInput.value = saved.displayName || '';
-    }, 500);
-  } else if (searchInput) {
-    searchInput.value = '';
-  }
 }
 
-function initMap() {
-  map = createStepMap({
-    container: 'location-map',
-    center: [-1.5, 53.0], // Centre of UK
-    zoom: 6,
-    pitch: 0,
-    bearing: 0,
-    maxBounds: [[-12, 49], [4, 61]], // UK bounds
-  });
+function ensureMapRuntime() {
+  if (maplibregl && createStepMap) {
+    return Promise.resolve();
+  }
 
-  // Click on map to set location
-  map.on('click', (e) => {
-    const { lng, lat } = e.lngLat;
-    reverseGeocode(lat, lng);
+  return loadMapRuntime().then((runtime) => {
+    maplibregl = runtime.maplibregl;
+    createStepMap = runtime.createStepMap;
+  });
+}
+
+function initMap(token) {
+  return new Promise((resolve) => {
+    map = createStepMap({
+      container: 'location-map',
+      center: [-1.5, 53.0], // Centre of UK
+      zoom: 6,
+      pitch: 0,
+      bearing: 0,
+      maxBounds: [[-12, 49], [4, 61]], // UK bounds
+      onLoad: () => {
+        if (token === mapInitToken) {
+          hideLocationMapLoading();
+        }
+        resolve();
+      },
+    });
+
+    map.on('click', (e) => {
+      const { lng, lat } = e.lngLat;
+      reverseGeocode(lat, lng);
+    });
   });
 }
 
@@ -130,15 +170,20 @@ function initSearch() {
   });
 
   // Close results on click outside
-  document.addEventListener('mousedown', (e) => {
+  outsideClickHandler = (e) => {
     if (!e.target.closest('.search-wrapper')) {
       resultsEl?.classList.add('hidden');
     }
-  });
+  };
+
+  document.addEventListener('mousedown', outsideClickHandler);
 }
 
 async function searchPlaces(query) {
   const resultsEl = document.getElementById('search-results');
+  const requestId = ++searchRequestId;
+  searchAbortController?.abort();
+  searchAbortController = new AbortController();
   
   try {
     // Use Nominatim for free geocoding (UK bounded)
@@ -153,24 +198,32 @@ async function searchPlaces(query) {
     });
 
     const res = await fetch(`https://nominatim.openstreetmap.org/search?${params}`, {
-      headers: { 'Accept-Language': 'en' }
+      headers: { 'Accept-Language': 'en' },
+      signal: searchAbortController.signal,
+      referrerPolicy: 'no-referrer',
     });
     const data = await res.json();
 
+    if (requestId !== searchRequestId) {
+      return;
+    }
+
     if (data.length === 0) {
-      resultsEl.innerHTML = '<div class="search-result-item" style="color: var(--text-muted);">No results found</div>';
+      resultsEl.replaceChildren(createSearchResultMessage('No results found'));
       resultsEl.classList.remove('hidden');
       return;
     }
 
-    resultsEl.innerHTML = data.map((place, i) => {
-      const safeName = place.display_name.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-      return `
-        <div class="search-result-item" data-idx="${i}">
-          ${place.display_name}
-        </div>
-      `;
-    }).join('');
+    const fragment = document.createDocumentFragment();
+    data.forEach((place, i) => {
+      const item = document.createElement('div');
+      item.className = 'search-result-item';
+      item.dataset.idx = String(i);
+      item.textContent = place.display_name;
+      fragment.appendChild(item);
+    });
+
+    resultsEl.replaceChildren(fragment);
 
     resultsEl.classList.remove('hidden');
 
@@ -190,8 +243,19 @@ async function searchPlaces(query) {
       });
     });
   } catch (err) {
+    if (err.name === 'AbortError') {
+      return;
+    }
     console.error('Search failed:', err);
   }
+}
+
+function createSearchResultMessage(message) {
+  const item = document.createElement('div');
+  item.className = 'search-result-item';
+  item.style.color = 'var(--text-muted)';
+  item.textContent = message;
+  return item;
 }
 
 async function reverseGeocode(lat, lng) {
@@ -204,7 +268,8 @@ async function reverseGeocode(lat, lng) {
     });
 
     const res = await fetch(`https://nominatim.openstreetmap.org/reverse?${params}`, {
-      headers: { 'Accept-Language': 'en' }
+      headers: { 'Accept-Language': 'en' },
+      referrerPolicy: 'no-referrer',
     });
     const data = await res.json();
     
@@ -263,9 +328,40 @@ function setLocation(lat, lng, displayName, options = {}) {
 }
 
 export function cleanup() {
+  mapInitToken += 1;
+
+  if (searchTimeout) {
+    clearTimeout(searchTimeout);
+    searchTimeout = null;
+  }
+
+  searchAbortController?.abort();
+  searchAbortController = null;
+  searchRequestId = 0;
+
+  if (outsideClickHandler) {
+    document.removeEventListener('mousedown', outsideClickHandler);
+    outsideClickHandler = null;
+  }
+
   if (map) {
     map.remove();
     map = null;
   }
   marker = null;
+}
+
+function showLocationMapLoading(message) {
+  const overlay = document.getElementById('location-map-loading');
+  const text = document.getElementById('location-map-loading-text');
+  if (text && message) {
+    text.textContent = message;
+  }
+  if (overlay) {
+    overlay.classList.remove('hidden');
+  }
+}
+
+function hideLocationMapLoading() {
+  document.getElementById('location-map-loading')?.classList.add('hidden');
 }

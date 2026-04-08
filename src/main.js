@@ -1,27 +1,19 @@
 import './style.css';
-import { getState, setState, resetState, subscribe } from './utils/state.js';
-
-// Step modules
-import * as landing from './steps/landing.js';
-import * as location from './steps/location.js';
-import * as buildingHeights from './steps/building-heights.js';
-import * as markSpace from './steps/mark-space.js';
-import * as shadowAnalysis from './steps/shadow-analysis.js';
-import * as kitSelection from './steps/kit-selection.js';
-import * as results from './steps/results.js';
+import { getState, setState, resetState } from './utils/state.js';
 
 const steps = [
-  { id: 'landing', label: 'Welcome', module: landing, showProgress: false },
-  { id: 'location', label: 'Location', module: location, showProgress: true },
-  { id: 'buildings', label: 'Site Setup', module: buildingHeights, showProgress: true },
-  { id: 'spaces', label: 'Placement', module: markSpace, showProgress: true },
-  { id: 'shadows', label: 'Shadows', module: shadowAnalysis, showProgress: true },
-  { id: 'kits', label: 'Kits', module: kitSelection, showProgress: true },
-  { id: 'results', label: 'Results', module: results, showProgress: true },
+  { id: 'landing', label: 'Welcome', showProgress: false, load: () => import('./steps/landing.js'), module: null },
+  { id: 'location', label: 'Location', showProgress: true, load: () => import('./steps/location.js'), module: null },
+  { id: 'buildings', label: 'Site Setup', showProgress: true, load: () => import('./steps/building-heights.js'), module: null },
+  { id: 'spaces', label: 'Placement', showProgress: true, load: () => import('./steps/mark-space.js'), module: null },
+  { id: 'shadows', label: 'Shadows', showProgress: true, load: () => import('./steps/shadow-analysis.js'), module: null },
+  { id: 'kits', label: 'Kits', showProgress: true, load: () => import('./steps/kit-selection.js'), module: null },
+  { id: 'results', label: 'Results', showProgress: true, load: () => import('./steps/results.js'), module: null },
 ];
 
 let currentStep = 0;
 let currentModule = null;
+let renderRequestId = 0;
 
 function init() {
   const savedCurrentStep = Number.isFinite(getState('currentStep')) ? getState('currentStep') : 0;
@@ -100,11 +92,12 @@ function cleanupCurrentStep() {
   }
 }
 
-function renderStep(stepIndex) {
+async function renderStep(stepIndex) {
   const step = steps[stepIndex];
   const contentEl = document.getElementById('step-content');
   const progressEl = document.getElementById('progress-bar');
   const startOverBtn = document.getElementById('btn-start-over');
+  const requestId = ++renderRequestId;
 
   if (!contentEl) return;
 
@@ -116,9 +109,9 @@ function renderStep(stepIndex) {
   contentEl.offsetHeight; // trigger reflow
   contentEl.style.animation = 'fadeSlideIn 0.5s ease forwards';
 
-  // Render step content
-  contentEl.innerHTML = step.module.render();
   updateHeader(step);
+  currentModule = null;
+  contentEl.innerHTML = renderStepLoading(step.label);
 
   // Show/hide progress bar
   if (step.showProgress && progressEl) {
@@ -133,14 +126,60 @@ function renderStep(stepIndex) {
     startOverBtn.style.display = stepIndex > 0 ? 'block' : 'none';
   }
 
-  // Initialize step
-  currentModule = step.module;
-  
-  // Use requestAnimationFrame to ensure DOM is ready
+  let stepModule;
+  try {
+    stepModule = await loadStepModule(step);
+  } catch (error) {
+    if (requestId !== renderRequestId) return;
+    console.error(`Failed to load step "${step.id}":`, error);
+    contentEl.innerHTML = `
+      <div class="loading-overlay" style="min-height: 40vh;">
+        <div style="font-size: 1.5rem; color: var(--danger);">⚠️</div>
+        <p>Failed to load this step.</p>
+        <button class="btn btn-secondary" id="btn-retry-step">Retry</button>
+      </div>
+    `;
+    document.getElementById('btn-retry-step')?.addEventListener('click', () => {
+      renderStep(stepIndex);
+    });
+    return;
+  }
+  if (requestId !== renderRequestId) return;
+
+  contentEl.innerHTML = stepModule.render();
+  currentModule = stepModule;
+
   requestAnimationFrame(() => {
+    if (requestId !== renderRequestId) return;
     bindHeaderLinks();
-    step.module.init();
+    stepModule.init?.();
+    preloadLikelyNextStep(stepIndex);
   });
+}
+
+function renderStepLoading(stepLabel) {
+  return `
+    <div class="loading-overlay" style="min-height: 40vh;">
+      <div class="loading-spinner"></div>
+      <p>Loading ${stepLabel.toLowerCase()}…</p>
+    </div>
+  `;
+}
+
+async function loadStepModule(step) {
+  if (step.module) {
+    return step.module;
+  }
+
+  const module = await step.load();
+  step.module = module;
+  return module;
+}
+
+function preloadLikelyNextStep(stepIndex) {
+  const nextStep = steps[stepIndex + 1];
+  if (!nextStep || nextStep.module) return;
+  void loadStepModule(nextStep);
 }
 
 function updateHeader(step) {

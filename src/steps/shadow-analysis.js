@@ -1,13 +1,22 @@
-import maplibregl from 'maplibre-gl';
 import { getState, setState } from '../utils/state.js';
 import { getSunTimes, getMapLightFromSun, getShadowOverlayFeatures, rankSpaces, samplePlacementHeatmap } from '../utils/sun.js';
-import { createPanelMarkerElement, createStepMap, drawDynamicShadows, drawObstacles, drawSuitabilityHeatmap, getShadeModelBuildings, updatePanelMarkerElement } from '../utils/map-helpers.js';
+import { escapeHtml } from '../utils/security.js';
+import { loadMapRuntime } from '../utils/map-runtime.js';
 
 let map = null;
 let animationFrame = null;
 let isAnimating = false;
 let markers = [];
 let selectedSpaceId = null;
+let mapInitToken = 0;
+let maplibregl = null;
+let createPanelMarkerElement = null;
+let createStepMap = null;
+let drawDynamicShadows = null;
+let drawObstacles = null;
+let drawSuitabilityHeatmap = null;
+let getShadeModelBuildings = null;
+let updatePanelMarkerElement = null;
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -24,6 +33,10 @@ export function render() {
 
       <div class="step-body full-width">
         <div class="map-container" id="shadow-map"></div>
+        <div class="map-loading-overlay" id="shadow-map-loading">
+          <div class="loading-spinner"></div>
+          <div id="shadow-map-loading-text">Loading shadow model…</div>
+        </div>
 
         <div class="map-overlay-panel map-overlay-panel-shadow">
           <div class="shadow-controls">
@@ -108,12 +121,6 @@ export function init() {
   if (!location) return;
   selectedSpaceId = getState('selectedSpaceId');
 
-  initMap(location);
-  initControls();
-  updateSunInfo();
-
-  setTimeout(() => runAnalysis(), 400);
-
   document.getElementById('btn-back-shadow')?.addEventListener('click', () => {
     stopAnimation();
     window.dispatchEvent(new CustomEvent('wizard:back'));
@@ -123,23 +130,69 @@ export function init() {
     stopAnimation();
     window.dispatchEvent(new CustomEvent('wizard:next'));
   });
+
+  const token = ++mapInitToken;
+  showShadowMapLoading('Loading shadow model…');
+
+  ensureMapRuntime()
+    .then(() => {
+      if (token !== mapInitToken) return;
+      initControls();
+      updateSunInfo();
+      return initMap(location, token);
+    })
+    .then(() => {
+      if (token !== mapInitToken) return;
+      window.setTimeout(() => {
+        if (token !== mapInitToken) return;
+        runAnalysis();
+      }, 100);
+    })
+    .catch((error) => {
+      if (token !== mapInitToken) return;
+      console.error('Failed to load shadow analysis map:', error);
+      showShadowMapLoading('Failed to load shadow map. Refresh or try again.');
+    });
 }
 
-function initMap(location) {
+function ensureMapRuntime() {
+  if (maplibregl && createStepMap && drawDynamicShadows) {
+    return Promise.resolve();
+  }
+
+  return loadMapRuntime().then((runtime) => {
+    maplibregl = runtime.maplibregl;
+    createPanelMarkerElement = runtime.createPanelMarkerElement;
+    createStepMap = runtime.createStepMap;
+    drawDynamicShadows = runtime.drawDynamicShadows;
+    drawObstacles = runtime.drawObstacles;
+    drawSuitabilityHeatmap = runtime.drawSuitabilityHeatmap;
+    getShadeModelBuildings = runtime.getShadeModelBuildings;
+    updatePanelMarkerElement = runtime.updatePanelMarkerElement;
+  });
+}
+
+function initMap(location, token) {
   const analysisCenter = getAnalysisCenter(location, getState('buildings') || []);
-  map = createStepMap({
-    container: 'shadow-map',
-    center: [analysisCenter.lng, analysisCenter.lat],
-    zoom: 18.4,
-    pitch: 55,
-    bearing: -24,
-    onLoad: () => {
-      addSpaceMarkers();
-      drawObstacles(map, getState('obstacles') || []);
-      const center = getAnalysisCenter(location, getState('buildings') || []);
-      drawSuitabilityHeatmap(map, samplePlacementHeatmap(center.lat, center.lng, getAnalysisBuildings(location), getState('obstacles') || []));
-      updateShadows();
-    },
+  return new Promise((resolve) => {
+    map = createStepMap({
+      container: 'shadow-map',
+      center: [analysisCenter.lng, analysisCenter.lat],
+      zoom: 18.4,
+      pitch: 55,
+      bearing: -24,
+      onLoad: () => {
+        addSpaceMarkers();
+        drawObstacles(map, getState('obstacles') || []);
+        const center = getAnalysisCenter(location, getState('buildings') || []);
+        drawSuitabilityHeatmap(map, samplePlacementHeatmap(center.lat, center.lng, getAnalysisBuildings(location), getState('obstacles') || []));
+        updateShadows();
+        if (token === mapInitToken) {
+          hideShadowMapLoading();
+        }
+        resolve();
+      },
+    });
   });
 }
 
@@ -339,13 +392,13 @@ function renderRankingCards(ranked) {
       ⭐ Spot Rankings
     </h4>
     ${ranked.map((space, index) => `
-      <div class="card-flat analysis-card ${space.id === selectedSpaceId ? 'analysis-card-best' : ''}" data-space-select="${space.id}">
+      <div class="card-flat analysis-card ${space.id === selectedSpaceId ? 'analysis-card-best' : ''}" data-space-select="${escapeHtml(space.id)}">
         <div class="flex justify-between items-center" style="margin-bottom: 10px;">
           <div>
             <span style="font-weight: 700; color: ${index === 0 ? 'var(--accent)' : 'var(--text-primary)'};">
               #${index + 1}
             </span>
-            <span style="font-size: 0.9rem; margin-left: 6px;">${space.typeIcon} ${space.name}</span>
+            <span style="font-size: 0.9rem; margin-left: 6px;">${escapeHtml(space.typeIcon)} ${escapeHtml(space.name)}</span>
           </div>
           <div style="text-align: right;">
             <div style="font-weight: 700; color: var(--accent); font-size: 1rem;">
@@ -358,16 +411,16 @@ function renderRankingCards(ranked) {
         </div>
 
         <div class="badge-row" style="margin-bottom: 10px;">
-          <span class="info-badge info-badge-${space.warningLevel}">
-            ${getWarningIcon(space.warningLevel)} ${space.relativeDirectionLabel}
+          <span class="info-badge info-badge-${sanitizeWarningLevel(space.warningLevel)}">
+            ${escapeHtml(getWarningIcon(space.warningLevel))} ${escapeHtml(space.relativeDirectionLabel)}
           </span>
           <span class="info-badge">
-            Confidence: ${capitalise(space.confidence)}
+            Confidence: ${escapeHtml(capitalise(space.confidence))}
           </span>
         </div>
 
         <div style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 8px;">
-          ${space.warnings.map((warning) => `<div>${warning}</div>`).join('')}
+          ${space.warnings.map((warning) => `<div>${escapeHtml(warning)}</div>`).join('')}
         </div>
 
         <div class="breakdown-row">
@@ -434,6 +487,10 @@ function getWarningIcon(level) {
   return '🟢';
 }
 
+function sanitizeWarningLevel(level) {
+  return level === 'high' || level === 'medium' ? level : 'low';
+}
+
 function formatBucket(label, value) {
   const icon = value === 'sun' ? '☀️' : value === 'mixed' ? '⛅' : '🌥️';
   return `${label} ${icon}`;
@@ -443,7 +500,21 @@ function capitalise(value) {
   return `${value.charAt(0).toUpperCase()}${value.slice(1)}`;
 }
 
+function showShadowMapLoading(message) {
+  const overlay = document.getElementById('shadow-map-loading');
+  const text = document.getElementById('shadow-map-loading-text');
+  if (text && message) {
+    text.textContent = message;
+  }
+  overlay?.classList.remove('hidden');
+}
+
+function hideShadowMapLoading() {
+  document.getElementById('shadow-map-loading')?.classList.add('hidden');
+}
+
 export function cleanup() {
+  mapInitToken += 1;
   stopAnimation();
   markers.forEach((entry) => entry.marker.remove());
   markers = [];

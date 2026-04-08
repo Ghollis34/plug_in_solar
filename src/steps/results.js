@@ -4,8 +4,17 @@ import { getState, setState } from '../utils/state.js';
 import { fetchSolarData, adjustForShadows } from '../utils/pvgis.js';
 import { calculateROI, formatCurrency, formatPayback } from '../utils/roi.js';
 import config from '../data/config.json';
+import { escapeHtml, safeDataId, sanitizeExternalUrl } from '../utils/security.js';
 
 let charts = [];
+let calculationRequestId = 0;
+const ALLOWED_RETAILER_HOSTS = [
+  'uk.ecoflow.com',
+  'thunderenergy.co.uk',
+  'zendure.com',
+  'www.anker.com',
+  'anker.com',
+];
 
 export function render() {
   return `
@@ -73,8 +82,9 @@ export function init() {
 }
 
 async function calculateResults() {
+  const requestId = ++calculationRequestId;
   const location = getState('location');
-  const selectedKit = getState('selectedKit');
+  const selectedKit = resolveSelectedKit(getState('selectedKit'));
   const sunAnalysis = getState('sunAnalysis');
   const spaces = getState('spaces') || [];
   const selectedSpaceId = getState('selectedSpaceId');
@@ -97,6 +107,8 @@ async function calculateResults() {
     const tilt = selectedSpace.tilt || 35;
 
     const solarData = await fetchSolarData(location.lat, location.lng, tilt, pvgisAzimuth);
+    if (requestId !== calculationRequestId) return;
+
     const baselineFactor = clamp(selectedSpace.shadowFactor ?? ((selectedSpace.avgDailyHours || 6) / 12), 0, 1);
     const conservativeFactor = clamp(selectedSpace.conservativeFactor ?? (baselineFactor - 0.14), 0, 1);
     const optimisticFactor = clamp(selectedSpace.optimisticFactor ?? (baselineFactor + 0.14), 0, 1);
@@ -121,6 +133,7 @@ async function calculateResults() {
         upgradeKitId: upgradeScenario?.kit.id || null,
       },
     });
+    if (requestId !== calculationRequestId) return;
 
     displayResults({
       primaryScenario,
@@ -130,6 +143,7 @@ async function calculateResults() {
       solarData,
     });
   } catch (error) {
+    if (requestId !== calculationRequestId) return;
     console.error('Results calculation failed:', error);
     showError('Failed to calculate results. Please try again.');
   }
@@ -160,14 +174,19 @@ function buildScenario(kit, solarData, baselineFactor, conservativeFactor, optim
 function displayResults({ primaryScenario, upgradeScenario, selectedSpace, recommendedSpace, solarData }) {
   const { kit, roi, adjusted, conservativeAdjusted, optimisticAdjusted, valueModel } = primaryScenario;
   const exportPaymentEnabled = hasExportPayment();
+  const safeKitName = escapeHtml(kit.name);
+  const safeSelectedSpaceName = escapeHtml(selectedSpace.name || 'your selected spot');
+  const safeRecommendedSpaceName = escapeHtml(recommendedSpace.name || 'recommended spot');
+  const safeConfidence = escapeHtml(capitalise(selectedSpace.confidence || 'medium'));
+  const safeRelativeDirection = escapeHtml(selectedSpace.relativeDirectionLabel || 'Position estimated');
   const annualValueGain = upgradeScenario
     ? Math.max(0, upgradeScenario.valueModel.annualValue - valueModel.annualValue)
     : 0;
   const warningsHtml = (selectedSpace.warnings || [])
-    .map((warning) => `<div style="font-size: 0.82rem; color: var(--text-secondary);">${warning}</div>`)
+    .map((warning) => `<div style="font-size: 0.82rem; color: var(--text-secondary);">${escapeHtml(warning)}</div>`)
     .join('');
   const selectionNote = selectedSpace.id && recommendedSpace.id && selectedSpace.id !== recommendedSpace.id
-    ? `<div style="font-size: 0.82rem; color: var(--text-secondary); margin-top: 8px;">This quote is using <strong>${selectedSpace.name}</strong>. The model still ranks <strong>${recommendedSpace.name}</strong> as the strongest sun location.</div>`
+    ? `<div style="font-size: 0.82rem; color: var(--text-secondary); margin-top: 8px;">This quote is using <strong>${safeSelectedSpaceName}</strong>. The model still ranks <strong>${safeRecommendedSpaceName}</strong> as the strongest sun location.</div>`
     : '';
   const annualValueCopy = exportPaymentEnabled
     ? `That is worth about <strong>${formatCurrency(valueModel.annualValue)}</strong> in year one, split between
@@ -201,9 +220,9 @@ function displayResults({ primaryScenario, upgradeScenario, selectedSpace, recom
     <div class="results-hero-grid">
       <div>
         <div class="results-kicker">Quote Summary</div>
-        <h3 class="results-hero-title">${kit.name} on ${selectedSpace.name || 'your selected spot'}</h3>
+        <h3 class="results-hero-title">${safeKitName} on ${safeSelectedSpaceName}</h3>
         <p class="recommendation-text">
-          Pricing this setup facing <strong>${getCompassDirection(selectedSpace.orientation || 180)}</strong> at
+          Pricing this setup facing <strong>${escapeHtml(getCompassDirection(selectedSpace.orientation || 180))}</strong> at
           <strong>${selectedSpace.tilt || 35}°</strong> tilt.
           The modelled first-year output is <strong>${roi.annualKwhYear1} kWh</strong>, with a more honest expected range of
           <strong>${conservativeAdjusted.annualKwh}-${optimisticAdjusted.annualKwh} kWh/year</strong>.
@@ -211,7 +230,7 @@ function displayResults({ primaryScenario, upgradeScenario, selectedSpace, recom
         </p>
         <div class="badge-row" style="margin: 14px 0 10px;">
           <span class="info-badge">${kit.hasBattery ? 'Battery combo selected' : 'Solar-only kit selected'}</span>
-          <span class="info-badge">Confidence: ${capitalise(selectedSpace.confidence || 'medium')}</span>
+          <span class="info-badge">Confidence: ${safeConfidence}</span>
           <span class="info-badge">Shadow factor: ${Math.round((selectedSpace.shadowFactor || adjusted.shadowFactor) * 100)}%</span>
         </div>
         ${warningsHtml}
@@ -264,9 +283,9 @@ function displayResults({ primaryScenario, upgradeScenario, selectedSpace, recom
     </div>
     <div class="card result-card">
       <div class="result-icon">🧭</div>
-      <div class="result-value accent">${capitalise(selectedSpace.confidence || 'medium')}</div>
+      <div class="result-value accent">${safeConfidence}</div>
       <div class="result-label">Confidence</div>
-      <div class="result-sublabel">${selectedSpace.relativeDirectionLabel || 'Position estimated'}</div>
+      <div class="result-sublabel">${safeRelativeDirection}</div>
     </div>
   `;
 
@@ -290,8 +309,8 @@ function renderBatteryUpgrade(primaryScenario, upgradeScenario) {
   if (primaryScenario.kit.hasBattery) {
     slot.innerHTML = `
       <div class="card battery-upgrade-card battery-upgrade-live">
-        <div class="battery-upgrade-eyebrow">Battery Included</div>
-        <h3 class="battery-upgrade-title">${primaryScenario.kit.name} already includes storage</h3>
+      <div class="battery-upgrade-eyebrow">Battery Included</div>
+        <h3 class="battery-upgrade-title">${escapeHtml(primaryScenario.kit.name)} already includes storage</h3>
         <p class="battery-upgrade-copy">
           This setup is expected to keep around <strong>${Math.round(primaryScenario.valueModel.selfUsedKwh)} kWh/year</strong> on-site and
           leave roughly <strong>${Math.round(primaryScenario.valueModel.exportKwh)} kWh/year</strong> as remaining spill after the battery has shifted some midday solar into later household use.
@@ -332,7 +351,7 @@ function renderBatteryUpgrade(primaryScenario, upgradeScenario) {
   slot.innerHTML = `
     <div class="card battery-upgrade-card">
       <div class="battery-upgrade-eyebrow">Recover Lost Solar Value</div>
-      <h3 class="battery-upgrade-title">Add ${upgradeScenario.kit.name}</h3>
+      <h3 class="battery-upgrade-title">Add ${escapeHtml(upgradeScenario.kit.name)}</h3>
       <p class="battery-upgrade-copy">
         With the solar-only setup, the model expects around <strong>${Math.round(primaryScenario.valueModel.exportKwh)} kWh/year</strong> to leave the home unused.
         Because this quote assumes no payment for that excess, the matched battery combo could recover roughly
@@ -365,12 +384,10 @@ function renderBatteryUpgrade(primaryScenario, upgradeScenario) {
     : `It would still leave about <strong>${Math.round(upgradeScenario.valueModel.exportKwh)} kWh/year</strong> as spill, but this quote assumes no payment for that excess.`}
       </div>
       <div class="result-actions">
-        <button class="btn btn-primary" id="btn-switch-battery" data-kit-id="${upgradeScenario.kit.id}">
+        <button class="btn btn-primary" id="btn-switch-battery" data-kit-id="${safeDataId(upgradeScenario.kit.id)}">
           Use Battery Combo In This Quote
         </button>
-        <a href="${upgradeScenario.kit.storeUrl}" target="_blank" rel="noopener" class="btn btn-outline">
-          View Battery Combo →
-        </a>
+        ${renderExternalAction(upgradeScenario.kit.storeUrl, 'View Battery Combo →', 'btn btn-outline')}
       </div>
     </div>
   `;
@@ -388,9 +405,7 @@ function renderResultActions(primaryScenario) {
 
   actionsEl.innerHTML = `
     <div class="result-actions">
-      <a href="${primaryScenario.kit.storeUrl}" target="_blank" rel="noopener" class="btn btn-primary">
-        View ${primaryScenario.kit.brand} Store →
-      </a>
+      ${renderExternalAction(primaryScenario.kit.storeUrl, `View ${primaryScenario.kit.brand || 'Retailer'} Store →`, 'btn btn-primary')}
       <button class="btn btn-outline" id="btn-recalc-results">
         Refresh This Quote
       </button>
@@ -577,6 +592,11 @@ function getBatteryUpgradeKit(selectedKit) {
   )) || null;
 }
 
+function resolveSelectedKit(selectedKit) {
+  if (!selectedKit?.id) return null;
+  return kitsData.find((kit) => kit.id === selectedKit.id) || null;
+}
+
 function animateCounters() {
   document.querySelectorAll('.result-value').forEach((element) => {
     element.style.animation = 'countUp 0.6s ease forwards';
@@ -589,6 +609,7 @@ function hideLoadingState() {
 }
 
 function resetResultsForRecalculation() {
+  calculationRequestId += 1;
   destroyCharts();
   document.getElementById('results-content')?.classList.add('hidden');
   document.getElementById('results-loading')?.classList.remove('hidden');
@@ -596,13 +617,19 @@ function resetResultsForRecalculation() {
 
 function showError(message) {
   destroyCharts();
-  document.getElementById('results-loading').innerHTML = `
+  const loadingEl = document.getElementById('results-loading');
+  if (!loadingEl) return;
+
+  loadingEl.innerHTML = `
     <div style="color: var(--danger); font-size: 1.2rem; margin-bottom: 8px;">⚠️</div>
-    <p>${message}</p>
-    <button class="btn btn-secondary mt-md" onclick="window.dispatchEvent(new CustomEvent('wizard:back'))">
+    <p>${escapeHtml(message)}</p>
+    <button class="btn btn-secondary mt-md" id="btn-results-error-back">
       ← Go Back
     </button>
   `;
+  document.getElementById('btn-results-error-back')?.addEventListener('click', () => {
+    window.dispatchEvent(new CustomEvent('wizard:back'));
+  });
 }
 
 function destroyCharts() {
@@ -636,6 +663,16 @@ function hasExportPayment() {
   return (config.exportTariff ?? 0) > 0;
 }
 
+function renderExternalAction(url, label, className) {
+  const safeUrl = sanitizeExternalUrl(url, { allowedHosts: ALLOWED_RETAILER_HOSTS });
+  if (!safeUrl) {
+    return `<button class="${className}" type="button" disabled>${escapeHtml(label)}</button>`;
+  }
+
+  return `<a href="${escapeHtml(safeUrl)}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" class="${className}">${escapeHtml(label)}</a>`;
+}
+
 export function cleanup() {
+  calculationRequestId += 1;
   destroyCharts();
 }

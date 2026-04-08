@@ -1,6 +1,7 @@
-import config from '../data/config.json';
-
 const PVGIS_BASE = 'https://re.jrc.ec.europa.eu/api/v5_3';
+const PVGIS_CACHE_PREFIX = 'pvgis_cache_v1:';
+const PVGIS_CACHE_TTL_MS = 1000 * 60 * 60 * 24;
+const pvgisRequestCache = new Map();
 
 /**
  * Fetch hourly solar radiation data from PVGIS for a given location
@@ -11,6 +12,16 @@ const PVGIS_BASE = 'https://re.jrc.ec.europa.eu/api/v5_3';
  * @returns {Promise<Object>} Monthly and annual generation data
  */
 export async function fetchSolarData(lat, lng, tilt = 35, azimuth = 0) {
+  const cacheKey = getCacheKey(lat, lng, tilt, azimuth);
+  const cachedData = getCachedSolarData(cacheKey);
+  if (cachedData) {
+    return cachedData;
+  }
+
+  if (pvgisRequestCache.has(cacheKey)) {
+    return pvgisRequestCache.get(cacheKey);
+  }
+
   const params = new URLSearchParams({
     lat: lat.toFixed(4),
     lon: lng.toFixed(4),
@@ -25,27 +36,30 @@ export async function fetchSolarData(lat, lng, tilt = 35, azimuth = 0) {
 
   const url = `${PVGIS_BASE}/PVcalc?${params}`;
 
-  try {
-    // Try direct request first
-    let response;
+  const requestPromise = (async () => {
     try {
-      response = await fetch(url);
-    } catch (e) {
-      // If CORS blocks it, try through a proxy
-      response = await fetch(`https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`);
+      const response = await fetch(url, {
+        referrerPolicy: 'no-referrer',
+      });
+      
+      if (!response.ok) {
+        throw new Error(`PVGIS API error: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      const parsed = parsePVGISResponse(data);
+      setCachedSolarData(cacheKey, parsed);
+      return parsed;
+    } catch (error) {
+      console.warn('PVGIS fetch failed, using UK fallback data:', error.message);
+      const fallback = getUKFallbackData(lat, tilt, azimuth);
+      setCachedSolarData(cacheKey, fallback);
+      return fallback;
     }
-    
-    if (!response.ok) {
-      throw new Error(`PVGIS API error: ${response.status}`);
-    }
-    
-    const data = await response.json();
-    return parsePVGISResponse(data);
-  } catch (error) {
-    console.warn('PVGIS fetch failed, using UK fallback data:', error.message);
-    // Return estimated fallback data for UK
-    return getUKFallbackData(lat);
-  }
+  })();
+
+  pvgisRequestCache.set(cacheKey, requestPromise);
+  return requestPromise;
 }
 
 /**
@@ -76,10 +90,14 @@ function parsePVGISResponse(data) {
  * Fallback data for UK locations when PVGIS is unavailable
  * Based on average UK solar irradiance data
  */
-function getUKFallbackData(lat) {
+function getUKFallbackData(lat, tilt = 35, azimuth = 0) {
   // UK average annual kWh per kWp varies by latitude
   // Southern England ~900, Midlands ~850, Scotland ~800
   const baseKwh = lat > 55 ? 800 : lat > 52 ? 850 : 900;
+  const orientationPenalty = Math.min(0.18, (Math.abs(azimuth) / 180) * 0.18);
+  const tiltPenalty = Math.min(0.12, (Math.abs(tilt - 35) / 55) * 0.12);
+  const performanceFactor = Math.max(0.72, 1 - orientationPenalty - tiltPenalty);
+  const adjustedBaseKwh = baseKwh * performanceFactor;
   
   // Monthly distribution (approximate UK pattern)
   const monthlyDistribution = [0.03, 0.04, 0.07, 0.10, 0.12, 0.13, 0.13, 0.11, 0.09, 0.07, 0.04, 0.03];
@@ -87,17 +105,17 @@ function getUKFallbackData(lat) {
   const months = monthlyDistribution.map((ratio, i) => ({
     month: i + 1,
     monthName: getMonthName(i + 1),
-    kwhPerKwp: Math.round(baseKwh * ratio * 10) / 10,
-    irradiation: Math.round(baseKwh * ratio * 1.1 * 10) / 10,
-    avgDailyKwh: Math.round((baseKwh * ratio / 30) * 100) / 100,
+    kwhPerKwp: Math.round(adjustedBaseKwh * ratio * 10) / 10,
+    irradiation: Math.round(adjustedBaseKwh * ratio * 1.1 * 10) / 10,
+    avgDailyKwh: Math.round((adjustedBaseKwh * ratio / 30) * 100) / 100,
   }));
 
   return {
     months,
     annual: {
-      kwhPerKwp: baseKwh,
-      irradiation: Math.round(baseKwh * 1.1),
-      avgDailyKwh: Math.round((baseKwh / 365) * 100) / 100,
+      kwhPerKwp: Math.round(adjustedBaseKwh),
+      irradiation: Math.round(adjustedBaseKwh * 1.1),
+      avgDailyKwh: Math.round((adjustedBaseKwh / 365) * 100) / 100,
     },
     isFallback: true,
   };
@@ -131,4 +149,50 @@ export function adjustForShadows(solarData, shadowFactor, kitWattage) {
 function getMonthName(monthNum) {
   const names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   return names[monthNum - 1] || '';
+}
+
+function getCacheKey(lat, lng, tilt, azimuth) {
+  return [
+    lat.toFixed(4),
+    lng.toFixed(4),
+    Math.round(tilt),
+    Math.round(azimuth),
+  ].join(':');
+}
+
+function getCachedSolarData(cacheKey) {
+  const memoryCached = pvgisRequestCache.get(cacheKey);
+  if (memoryCached && typeof memoryCached.then !== 'function') {
+    return memoryCached;
+  }
+
+  try {
+    const raw = sessionStorage.getItem(`${PVGIS_CACHE_PREFIX}${cacheKey}`);
+    if (!raw) return null;
+
+    const parsed = JSON.parse(raw);
+    if (!parsed?.savedAt || !parsed?.data) return null;
+    if ((Date.now() - parsed.savedAt) > PVGIS_CACHE_TTL_MS) {
+      sessionStorage.removeItem(`${PVGIS_CACHE_PREFIX}${cacheKey}`);
+      return null;
+    }
+
+    pvgisRequestCache.set(cacheKey, parsed.data);
+    return parsed.data;
+  } catch (error) {
+    return null;
+  }
+}
+
+function setCachedSolarData(cacheKey, data) {
+  pvgisRequestCache.set(cacheKey, data);
+
+  try {
+    sessionStorage.setItem(`${PVGIS_CACHE_PREFIX}${cacheKey}`, JSON.stringify({
+      savedAt: Date.now(),
+      data,
+    }));
+  } catch (error) {
+    // Cache write failures should not block the quote flow.
+  }
 }

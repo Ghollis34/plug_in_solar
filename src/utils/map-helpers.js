@@ -1,4 +1,5 @@
 import maplibregl from 'maplibre-gl';
+import 'maplibre-gl/dist/maplibre-gl.css';
 import { distancePointToSegment, getRectangleRing, latLngToMeters, metersToLatLng, pointInPolygon } from './geometry.js';
 
 const DEFAULT_STYLE = 'https://tiles.openfreemap.org/styles/bright';
@@ -145,7 +146,7 @@ export function addSatelliteToggle(map) {
 
 function syncSatelliteToggleLabel(btn, active) {
   btn.classList.toggle('active', active);
-  btn.innerHTML = active ? '🗺️ Street' : '🛰️ Satellite';
+  btn.textContent = active ? '🗺️ Street' : '🛰️ Satellite';
 }
 
 export function toggleSatellite(map) {
@@ -590,14 +591,25 @@ export function createPanelMarkerElement(space, options = {}) {
   const el = document.createElement('button');
   el.type = 'button';
   el.className = `panel-marker${compact ? ' panel-marker-compact' : ''}`;
-  el.innerHTML = `
-    <span class="panel-marker-halo"></span>
-    <span class="panel-marker-surface"></span>
-    <span class="panel-marker-card">
-      <span class="panel-marker-grid"></span>
-      <span class="panel-marker-icon">${space.typeIcon || '☀️'}</span>
-    </span>
-  `;
+
+  const halo = document.createElement('span');
+  halo.className = 'panel-marker-halo';
+
+  const surface = document.createElement('span');
+  surface.className = 'panel-marker-surface';
+
+  const card = document.createElement('span');
+  card.className = 'panel-marker-card';
+
+  const grid = document.createElement('span');
+  grid.className = 'panel-marker-grid';
+
+  const icon = document.createElement('span');
+  icon.className = 'panel-marker-icon';
+  icon.textContent = space.typeIcon || '☀️';
+
+  card.append(grid, icon);
+  el.append(halo, surface, card);
 
   if (typeof options.onClick === 'function') {
     el.addEventListener('click', options.onClick);
@@ -764,8 +776,14 @@ function addMapInteractionHint(map, customText) {
 
   const hint = document.createElement('div');
   hint.className = MAP_INTERACTION_HINT_CLASS;
-  hint.innerHTML = customText
-    || '<strong>Map controls:</strong> drag to pan, scroll to zoom, and right- or middle-drag to rotate. Use the compass to return north-up.';
+  if (customText) {
+    hint.textContent = customText;
+  } else {
+    const label = document.createElement('strong');
+    label.textContent = 'Map controls:';
+    hint.appendChild(label);
+    hint.appendChild(document.createTextNode(' drag to pan, scroll to zoom, and right- or middle-drag to rotate. Use the compass to return north-up.'));
+  }
   container.appendChild(hint);
 }
 

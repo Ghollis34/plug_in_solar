@@ -1,8 +1,12 @@
-import maplibregl from 'maplibre-gl';
 import { getState, setState } from '../utils/state.js';
 import { degreesToCompass, getBearingBetweenPoints, getRectangleRing, latLngToMeters, metersToLatLng, normalizeDegrees } from '../utils/geometry.js';
 import { getMapLightFromSun, samplePlacementHeatmap } from '../utils/sun.js';
-import { createPanelMarkerElement, createStepMap, drawBuildingFootprintPreview, drawObstacles, drawSuitabilityHeatmap, normalizeObstacles, updatePanelMarkerElement } from '../utils/map-helpers.js';
+import { escapeHtml } from '../utils/security.js';
+import { getSpaceTypeInfo, OBSTACLE_TOOLS, SPACE_TYPES } from '../utils/site-config.js';
+import { loadMapRuntime } from '../utils/map-runtime.js';
+import { renderObstacleList } from '../utils/obstacle-list.js';
+import { rotateShedById } from '../utils/site-obstacle-state.js';
+import { getShedRotationValue, setShedRotationValue, syncShedRotationUI } from '../utils/shed-rotation.js';
 
 let map = null;
 let activeMode = 'space';
@@ -18,35 +22,19 @@ let selectedSpaceId = null;
 let heatmapRefreshHandle = null;
 let heatmapIdleHandle = null;
 let initialSceneReady = false;
+let mapInitToken = 0;
+let maplibregl = null;
+let createPanelMarkerElement = null;
+let createStepMap = null;
+let drawBuildingFootprintPreview = null;
+let drawObstacles = null;
+let drawSuitabilityHeatmap = null;
+let normalizeObstacles = null;
+let updatePanelMarkerElement = null;
 
 const SURFACE_SNAP_DISTANCE_M = 6;
 const WALL_SNAP_DISTANCE_M = 5;
 const PANEL_SNAP_OFFSET_M = 0.8;
-
-const spaceTypes = [
-  { id: 'railing', icon: '🏗️', label: 'Balcony Railing' },
-  { id: 'wall', icon: '🧱', label: 'Wall Mount' },
-  { id: 'fence', icon: '☀️', label: 'Fence Mount' },
-  { id: 'flat-roof', icon: '🏠', label: 'Flat Roof / Shed' },
-  { id: 'ground', icon: '🌿', label: 'Ground / Garden' },
-];
-
-const obstacleTools = [
-  { id: 'fence', label: 'Fence', icon: '🟧' },
-  { id: 'tree', label: 'Tree', icon: '🌳' },
-  { id: 'shed', label: 'Shed / Wall', icon: '⬜' },
-];
-
-const SHED_DIRECTION_OPTIONS = [
-  { label: 'N', deg: 0 },
-  { label: 'NE', deg: 45 },
-  { label: 'E', deg: 90 },
-  { label: 'SE', deg: 135 },
-  { label: 'S', deg: 180 },
-  { label: 'SW', deg: 225 },
-  { label: 'W', deg: 270 },
-  { label: 'NW', deg: 315 },
-];
 
 export function render() {
   const obstacleCount = (getState('obstacles') || []).length;
@@ -94,7 +82,7 @@ export function render() {
           <div class="form-group mb-md">
             <label class="form-label">Surface type</label>
             <div class="space-type-grid">
-              ${spaceTypes.map((type) => `
+              ${SPACE_TYPES.map((type) => `
                 <button class="space-type-btn ${type.id === 'ground' ? 'active' : ''}" data-type="${type.id}">
                   <span class="type-icon">${type.icon}</span>
                   ${type.label}
@@ -155,20 +143,6 @@ export function init() {
   const location = getState('location');
   if (!location) return;
 
-  drawnSpaces = [...(getState('spaces') || [])];
-  drawnObstacles = normalizeObstacles(getState('obstacles') || []);
-  selectedSpaceId = getState('selectedSpaceId') || drawnSpaces[0]?.id || null;
-  spaceCounter = drawnSpaces.length;
-  obstacleCounter = drawnObstacles.length;
-  initialSceneReady = false;
-
-  initMap(location);
-  initControls();
-  updateObstaclesList();
-  updateSpacesList();
-  updateNextButton();
-  updatePlacementStatus('Click the button, then drop candidate panel locations onto the map. To edit fences, sheds, or trees, go back to Site Setup.');
-
   document.getElementById('btn-back-spaces')?.addEventListener('click', () => {
     window.dispatchEvent(new CustomEvent('wizard:back'));
   });
@@ -181,43 +155,95 @@ export function init() {
     });
     window.dispatchEvent(new CustomEvent('wizard:next'));
   });
+
+  const token = ++mapInitToken;
+  showPlacementMapLoading('Loading placement map…');
+
+  ensureMapRuntime()
+    .then(() => {
+      if (token !== mapInitToken) return;
+
+      drawnSpaces = [...(getState('spaces') || [])];
+      drawnObstacles = normalizeObstacles(getState('obstacles') || []);
+      selectedSpaceId = getState('selectedSpaceId') || drawnSpaces[0]?.id || null;
+      spaceCounter = drawnSpaces.length;
+      obstacleCounter = drawnObstacles.length;
+      initialSceneReady = false;
+
+      initControls();
+      updateObstaclesList();
+      updateSpacesList();
+      updateNextButton();
+      updatePlacementStatus('Click the button, then drop candidate panel locations onto the map. To edit fences, sheds, or trees, go back to Site Setup.');
+      return initMap(location, token);
+    })
+    .catch((error) => {
+      if (token !== mapInitToken) return;
+      console.error('Failed to load placement map:', error);
+      showPlacementMapLoading('Failed to load placement map. Refresh or try again.');
+    });
 }
 
-function initMap(location) {
+function ensureMapRuntime() {
+  if (maplibregl && createStepMap && normalizeObstacles) {
+    return Promise.resolve();
+  }
+
+  return loadMapRuntime().then((runtime) => {
+    maplibregl = runtime.maplibregl;
+    createPanelMarkerElement = runtime.createPanelMarkerElement;
+    createStepMap = runtime.createStepMap;
+    drawBuildingFootprintPreview = runtime.drawBuildingFootprintPreview;
+    drawObstacles = runtime.drawObstacles;
+    drawSuitabilityHeatmap = runtime.drawSuitabilityHeatmap;
+    normalizeObstacles = runtime.normalizeObstacles;
+    updatePanelMarkerElement = runtime.updatePanelMarkerElement;
+  });
+}
+
+function initMap(location, token) {
   const mapCenter = getPlacementCenter(location);
-  map = createStepMap({
-    container: 'spaces-map',
-    center: [mapCenter.lng, mapCenter.lat],
-    zoom: 18.6,
-    pitch: 55,
-    bearing: -24,
-    onLoad: () => {
-      showPlacementMapLoading('Positioning map…');
-      drawHousePreview();
-      refreshObstaclesAfterSettledPaint();
-      drawnSpaces.forEach((space) => addMarkerToMap(space));
-      applyPlacementSceneLighting();
-      fitMapToPlacementSite(() => {
-        showPlacementMapLoading('Loading site objects…');
+  return new Promise((resolve) => {
+    map = createStepMap({
+      container: 'spaces-map',
+      center: [mapCenter.lng, mapCenter.lat],
+      zoom: 18.6,
+      pitch: 55,
+      bearing: -24,
+      onLoad: () => {
+        if (token !== mapInitToken) {
+          resolve();
+          return;
+        }
+
+        showPlacementMapLoading('Positioning map…');
+        drawHousePreview();
+        refreshObstaclesAfterSettledPaint();
+        drawnSpaces.forEach((space) => addMarkerToMap(space));
         applyPlacementSceneLighting();
-        refreshPanelMarkers();
-        hidePlacementMapLoading();
-        queueHeatmapRefresh({ fastMode: true, immediate: true });
-        refreshObstaclesAfterSettledPaint(() => {
-          if (!initialSceneReady) {
-            queueHeatmapRefresh({ fastMode: true, immediate: true });
-          }
+        fitMapToPlacementSite(() => {
+          showPlacementMapLoading('Loading site objects…');
+          applyPlacementSceneLighting();
+          refreshPanelMarkers();
+          hidePlacementMapLoading();
+          queueHeatmapRefresh({ fastMode: true, immediate: true });
+          refreshObstaclesAfterSettledPaint(() => {
+            if (!initialSceneReady) {
+              queueHeatmapRefresh({ fastMode: true, immediate: true });
+            }
+          });
+          resolve();
         });
-      });
-    },
-  });
+      },
+    });
 
-  map.on('click', (e) => {
-    handleMapClick(e.lngLat.lat, e.lngLat.lng);
-  });
+    map.on('click', (e) => {
+      handleMapClick(e.lngLat.lat, e.lngLat.lng);
+    });
 
-  map.on('rotate', () => {
-    refreshPanelMarkers();
+    map.on('rotate', () => {
+      refreshPanelMarkers();
+    });
   });
 }
 
@@ -283,7 +309,7 @@ function setActiveMode(mode) {
 }
 
 function setActiveObstacleTool(tool) {
-  activeObstacleTool = obstacleTools.find((entry) => entry.id === tool)?.id || 'fence';
+  activeObstacleTool = OBSTACLE_TOOLS.find((entry) => entry.id === tool)?.id || 'fence';
   cancelPlacement();
 
   document.querySelectorAll('[data-obstacle-tool]').forEach((button) => {
@@ -358,7 +384,7 @@ function addSpace(lat, lng) {
   spaceCounter += 1;
   const activeType = document.querySelector('.space-type-btn.active');
   const typeId = activeType?.dataset.type || 'ground';
-  const typeInfo = spaceTypes.find((type) => type.id === typeId);
+  const typeInfo = getSpaceTypeInfo(typeId);
   const manualOrientation = parseInt(document.getElementById('orientation-slider')?.value || 180, 10);
   const tilt = parseInt(document.getElementById('tilt-slider')?.value || 35, 10);
   const surfaceAlignment = resolveSurfaceAlignment(typeId, lat, lng);
@@ -453,16 +479,26 @@ function addMarkerToMap(space) {
     rotationAlignment: 'map',
   })
     .setLngLat([space.centerLng, space.centerLat])
-    .setPopup(new maplibregl.Popup({ offset: 25 }).setHTML(`
-      <strong>${space.name}</strong><br/>
-      <span style="font-size: 0.8rem; color: #94A3B8;">
-        ${space.orientationLabel} · ${space.tilt}° tilt${space.alignmentHint ? ` · ${space.alignmentHint}` : ''}
-      </span>
-    `))
+    .setPopup(new maplibregl.Popup({ offset: 25 }).setDOMContent(createSpacePopupContent(space)))
     .addTo(map);
 
   markers.push({ id: space.id, marker, element: el });
   applyMarkerSelectionStyles();
+}
+
+function createSpacePopupContent(space) {
+  const root = document.createElement('div');
+
+  const title = document.createElement('strong');
+  title.textContent = space.name || 'Panel location';
+
+  const meta = document.createElement('span');
+  meta.style.fontSize = '0.8rem';
+  meta.style.color = '#94A3B8';
+  meta.textContent = `${space.orientationLabel || 'Facing set'} · ${space.tilt ?? 35}° tilt${space.alignmentHint ? ` · ${space.alignmentHint}` : ''}`;
+
+  root.append(title, document.createElement('br'), meta);
+  return root;
 }
 
 function refreshObstacles() {
@@ -599,17 +635,17 @@ function updateSpacesList() {
     ${drawnSpaces.map((space) => `
       <div class="card-flat compact-row ${space.id === selectedSpaceId ? 'analysis-card-best' : ''}">
         <div>
-          <span>${space.typeIcon}</span>
-          <strong style="font-size: 0.85rem;">${space.name}</strong>
+          <span>${escapeHtml(space.typeIcon)}</span>
+          <strong style="font-size: 0.85rem;">${escapeHtml(space.name)}</strong>
           <div style="font-size: 0.75rem; color: var(--text-muted);">
-            ${space.orientationLabel} · ${space.tilt}° tilt${space.alignmentHint ? ` · ${space.alignmentHint}` : ''}
+            ${escapeHtml(space.orientationLabel)} · ${escapeHtml(space.tilt)}° tilt${space.alignmentHint ? ` · ${escapeHtml(space.alignmentHint)}` : ''}
           </div>
         </div>
         <div class="badge-row">
-          <button class="btn btn-sm btn-outline select-space-btn" data-id="${space.id}" style="padding: 4px 10px; font-size: 0.75rem;">
+          <button class="btn btn-sm btn-outline select-space-btn" data-id="${escapeHtml(space.id)}" style="padding: 4px 10px; font-size: 0.75rem;">
             ${space.id === selectedSpaceId ? 'Selected' : 'Use This'}
           </button>
-          <button class="btn btn-sm btn-secondary remove-space-btn" data-id="${space.id}" style="padding: 4px 10px; font-size: 0.75rem;">✕</button>
+          <button class="btn btn-sm btn-secondary remove-space-btn" data-id="${escapeHtml(space.id)}" style="padding: 4px 10px; font-size: 0.75rem;">✕</button>
         </div>
       </div>
     `).join('')}
@@ -647,124 +683,38 @@ function updateObstaclesList() {
   const listEl = document.getElementById('obstacles-list');
   if (!listEl) return;
 
-  if (drawnObstacles.length === 0) {
-    listEl.innerHTML = `
-      <div class="card-flat card-flat-subtle" style="padding: 12px; margin: 0 0 14px;">
-        <div style="font-weight: 600; margin-bottom: 4px;">Site obstacles</div>
-        <div style="font-size: 0.85rem; color: var(--text-secondary);">
-          No fences, sheds, or trees have been carried into this step yet. Go back to Site Setup if you need to add them.
-        </div>
-      </div>
-    `;
-    return;
-  }
-
-  listEl.innerHTML = `
-    <h4 style="margin: 0 0 10px; font-size: 0.9rem; color: var(--text-secondary);">
-      Site Obstacles (${drawnObstacles.length})
-    </h4>
-    <div class="analysis-note mb-md" style="margin-bottom: 12px;">
-      These are the fences, sheds, and trees from Site Setup. They are read-only here and used for placement snapping and shadow scoring.
-    </div>
-    ${drawnObstacles.map((obstacle) => `
-      <div class="card-flat compact-row">
-        <div>
-          <strong style="font-size: 0.85rem;">${formatObstacleLabel(obstacle)}</strong>
-          <div style="font-size: 0.75rem; color: var(--text-muted);">
-            ${formatObstacleDetails(obstacle)}
-          </div>
-        </div>
-        <div class="obstacle-action-group">
-          ${obstacle.type === 'shed' ? `
-            <button class="btn btn-sm btn-outline rotate-obstacle-btn" data-id="${obstacle.id}" data-rotate="-15" style="padding: 4px 10px; font-size: 0.75rem;">↺ 15°</button>
-            <button class="btn btn-sm btn-outline rotate-obstacle-btn" data-id="${obstacle.id}" data-rotate="15" style="padding: 4px 10px; font-size: 0.75rem;">↻ 15°</button>
-          ` : ''}
-          <button class="btn btn-sm btn-secondary remove-obstacle-btn" data-id="${obstacle.id}" style="padding: 4px 10px; font-size: 0.75rem;">✕</button>
-        </div>
-      </div>
-    `).join('')}
-  `;
-
-  listEl.querySelectorAll('.rotate-obstacle-btn').forEach((button) => {
-    button.addEventListener('click', () => {
-      const delta = parseInt(button.dataset.rotate || '0', 10);
-      if (!Number.isFinite(delta)) return;
-      rotateShed(button.dataset.id, delta);
-    });
-  });
-
-  listEl.querySelectorAll('.remove-obstacle-btn').forEach((button) => {
-    button.addEventListener('click', () => {
-      const id = button.dataset.id;
+  renderObstacleList(listEl, {
+    obstacles: drawnObstacles,
+    heading: drawnObstacles.length ? `Site Obstacles (${drawnObstacles.length})` : null,
+    note: drawnObstacles.length
+      ? 'These are the fences, sheds, and trees from Site Setup. They are read-only here and used for placement snapping and shadow scoring.'
+      : null,
+    emptyTitle: 'Site obstacles',
+    emptyMessage: 'No fences, sheds, or trees have been carried into this step yet. Go back to Site Setup if you need to add them.',
+    onRotate: rotateShed,
+    onRemove: (id) => {
       drawnObstacles = drawnObstacles.filter((obstacle) => obstacle.id !== id);
       refreshObstacles();
       queueHeatmapRefresh();
       updateObstaclesList();
-    });
+    },
   });
-}
-
-function formatObstacleLabel(obstacle) {
-  if (obstacle.type === 'tree') return '🌳 Tree';
-  if (obstacle.type === 'shed') return '⬜ Shed / Wall';
-  return '🟧 Fence';
-}
-
-function formatObstacleDetails(obstacle) {
-  if (obstacle.type === 'tree') {
-    return `${obstacle.heightM}m high · ${obstacle.canopyRadiusM}m canopy radius`;
-  }
-
-  if (obstacle.type === 'shed') {
-    return `${obstacle.widthM}m × ${obstacle.depthM}m · ${obstacle.heightM}m high · facing ${degreesToCompass(obstacle.rotationDeg || 0, 'long')} (${Math.round(obstacle.rotationDeg || 0)}°)`;
-  }
-
-  return `${obstacle.heightM}m high line`;
 }
 
 function setShedRotation(value) {
-  const slider = document.getElementById('shed-rotation-slider');
-  if (slider) {
-    slider.value = String(value);
-  }
-  updateShedRotationUI();
+  setShedRotationValue(value);
 }
 
 function getShedRotation() {
-  const value = parseInt(document.getElementById('shed-rotation-slider')?.value || 0, 10);
-  return Number.isFinite(value) ? value : 0;
+  return getShedRotationValue();
 }
 
 function updateShedRotationUI() {
-  const rotation = getShedRotation();
-  const valueEl = document.getElementById('shed-rotation-value');
-  const noteEl = document.getElementById('shed-rotation-note');
-
-  document.querySelectorAll('[data-shed-rotation]').forEach((chip) => {
-    chip.classList.toggle('active', parseInt(chip.dataset.shedRotation, 10) === rotation);
-  });
-
-  if (valueEl) {
-    valueEl.textContent = `${degreesToCompass(rotation, 'long')} (${rotation}°)`;
-  }
-
-  if (noteEl) {
-    noteEl.textContent = `Shed front set to ${degreesToCompass(rotation, 'long')}. Place it on the map when the direction looks right.`;
-  }
+  syncShedRotationUI();
 }
 
 function rotateShed(obstacleId, deltaDeg) {
-  drawnObstacles = drawnObstacles.map((obstacle) => {
-    if (obstacle.id !== obstacleId || obstacle.type !== 'shed') {
-      return obstacle;
-    }
-
-    return {
-      ...obstacle,
-      rotationDeg: normalizeDegrees((obstacle.rotationDeg || 0) + deltaDeg),
-    };
-  });
-
+  drawnObstacles = rotateShedById(drawnObstacles, obstacleId, deltaDeg);
   refreshObstacles();
   queueHeatmapRefresh();
   updateObstaclesList();
@@ -1211,6 +1161,7 @@ function getEffectiveSelectedSpaceId() {
 }
 
 export function cleanup() {
+  mapInitToken += 1;
   cancelScheduledHeatmapRefresh();
 
   document.removeEventListener('keydown', handleEscapeKey);

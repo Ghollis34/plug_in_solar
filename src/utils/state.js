@@ -2,6 +2,12 @@
  * Simple reactive state store with event emitting and localStorage persistence
  */
 
+import {
+  normalizePersistedState,
+  normalizeUpdates,
+  reconcileDerivedState,
+} from './state-normalizers.js';
+
 const STORAGE_KEY = 'solarspot_state';
 
 const defaultState = {
@@ -13,7 +19,7 @@ const defaultState = {
   selectedSpaceId: null,
   obstacles: [],        // [{ id, type, ... }]
   sunAnalysis: null,    // { bestSpaceId, scores: [...], date }
-  selectedKit: null,    // kit object from kits.json
+  selectedKit: null,    // persisted as kit id reference
   results: null,        // { annualKwh, annualSavings, paybackYears, ... }
 };
 
@@ -26,7 +32,7 @@ function loadState() {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved) {
       const parsed = JSON.parse(saved);
-      state = { ...defaultState, ...parsed };
+      state = { ...defaultState, ...normalizePersistedState(parsed, defaultState) };
     }
   } catch (e) {
     console.warn('Failed to load saved state:', e);
@@ -51,10 +57,25 @@ export function getState(key) {
 /** Set state values and notify listeners */
 export function setState(updates) {
   const changedKeys = [];
+  const normalizedUpdates = normalizeUpdates(updates);
+  const nextState = { ...state };
   
-  for (const [key, value] of Object.entries(updates)) {
-    if (state[key] !== value) {
-      state[key] = value;
+  for (const [key, value] of Object.entries(normalizedUpdates)) {
+    nextState[key] = value;
+  }
+
+  reconcileDerivedState(nextState, normalizedUpdates, defaultState);
+
+  const keysToCheck = new Set([
+    ...Object.keys(normalizedUpdates),
+    'maxVisitedStep',
+    'selectedSpaceId',
+    'sunAnalysis',
+  ]);
+
+  for (const key of keysToCheck) {
+    if (state[key] !== nextState[key]) {
+      state[key] = nextState[key];
       changedKeys.push(key);
     }
   }

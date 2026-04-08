@@ -1,5 +1,6 @@
 import kitsData from '../data/kits.json';
 import { getState, setState } from '../utils/state.js';
+import { escapeHtml, safeDataId } from '../utils/security.js';
 
 let activeFilters = { wattage: 'all', brand: 'all' };
 
@@ -43,7 +44,7 @@ export function render() {
           <span style="color: var(--border); padding: 0 4px;">|</span>
           <button class="filter-chip active" data-filter="brand" data-value="all">All Brands</button>
           ${[...new Set(kitsData.map((kit) => kit.brand))].map((brand) => `
-            <button class="filter-chip" data-filter="brand" data-value="${brand}">${brand}</button>
+            <button class="filter-chip" data-filter="brand" data-value="${safeDataId(brand)}">${escapeHtml(brand)}</button>
           `).join('')}
         </div>
 
@@ -122,18 +123,18 @@ function renderKitCard(kit, selectedId) {
   const isCompatible = kit.mountingTypes.some((mountType) => spaceTypes.includes(mountType)) || spaceTypes.length === 0;
 
   return `
-    <div class="card kit-card ${isSelected ? 'selected' : ''}" data-kit-id="${kit.id}" id="kit-${kit.id}">
+    <div class="card kit-card ${isSelected ? 'selected' : ''}" data-kit-id="${safeDataId(kit.id)}" id="kit-${safeDataId(kit.id)}">
       <div class="kit-select-badge">✓ Selected</div>
       <div class="kit-card-image">
         <span style="font-size: 3rem;">${kit.hasBattery ? '🔋' : '☀️'}</span>
       </div>
       <div class="kit-card-body">
         <div class="kit-card-topline">
-          <div class="kit-brand">${kit.brand}</div>
+          <div class="kit-brand">${escapeHtml(kit.brand)}</div>
           <span class="kit-package-pill ${kit.hasBattery ? 'battery' : 'solar'}">${kit.hasBattery ? 'Battery combo' : 'Solar only'}</span>
         </div>
-        <h3 class="kit-name">${kit.name}</h3>
-        <p class="kit-desc">${kit.description}</p>
+        <h3 class="kit-name">${escapeHtml(kit.name)}</h3>
+        <p class="kit-desc">${escapeHtml(kit.description)}</p>
 
         <div class="kit-specs">
           <span class="kit-spec-tag highlight">${kit.wattage}W</span>
@@ -146,7 +147,7 @@ function renderKitCard(kit, selectedId) {
 
         <div style="margin-bottom: 12px;">
           ${kit.features.map((feature) => `
-            <span style="font-size: 0.75rem; color: var(--text-muted); display: inline-block; margin-right: 10px;">• ${feature}</span>
+            <span style="font-size: 0.75rem; color: var(--text-muted); display: inline-block; margin-right: 10px;">• ${escapeHtml(feature)}</span>
           `).join('')}
         </div>
 
