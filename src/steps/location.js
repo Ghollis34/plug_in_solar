@@ -1,5 +1,5 @@
 import { getState, setState } from '../utils/state.js';
-import { loadMapRuntime } from '../utils/map-runtime.js';
+import { createMapStepSession } from '../utils/map-step-session.js';
 
 let map = null;
 let marker = null;
@@ -7,9 +7,9 @@ let searchTimeout = null;
 let searchAbortController = null;
 let searchRequestId = 0;
 let outsideClickHandler = null;
-let mapInitToken = 0;
-let maplibregl = null;
-let createStepMap = null;
+let mapRuntime = null;
+
+const mapSession = createMapStepSession();
 
 export function render() {
   return `
@@ -115,18 +115,24 @@ export function render() {
 }
 
 export function init() {
-  const token = ++mapInitToken;
+  const token = mapSession.beginRun();
   showLocationMapLoading('Loading UK map…');
   initSearch();
   updateLocationGuide();
 
-  ensureMapRuntime()
-    .then(() => {
-      if (token !== mapInitToken) return;
+  mapSession.ensureRuntime(token)
+    .then((runtime) => {
+      if (!runtime) return null;
+      mapRuntime = runtime;
       return initMap(token);
     })
+    .then((createdMap) => {
+      if (!createdMap || !mapSession.isCurrent(token)) return;
+      map = createdMap;
+      bindMapInteractions();
+    })
     .then(() => {
-      if (token !== mapInitToken) return;
+      if (!mapSession.isCurrent(token)) return;
 
       // Restore saved location or clear stale input
       const saved = getState('location');
@@ -140,7 +146,7 @@ export function init() {
       }
     })
     .catch((error) => {
-      if (token !== mapInitToken) return;
+      if (!mapSession.isCurrent(token)) return;
       console.error('Failed to load location map:', error);
       showLocationMapLoading('Failed to load map. Refresh or try again.');
     });
@@ -154,38 +160,29 @@ export function init() {
   });
 }
 
-function ensureMapRuntime() {
-  if (maplibregl && createStepMap) {
-    return Promise.resolve();
-  }
-
-  return loadMapRuntime().then((runtime) => {
-    maplibregl = runtime.maplibregl;
-    createStepMap = runtime.createStepMap;
+function initMap(token) {
+  return mapSession.createMap(token, {
+    container: 'location-map',
+    center: [-1.5, 53.0], // Centre of UK
+    zoom: 6,
+    pitch: 0,
+    bearing: 0,
+    maxBounds: [[-12, 49], [4, 61]], // UK bounds
+    onLoad: (mapInstance) => {
+      map = mapInstance;
+      if (mapSession.isCurrent(token)) {
+        hideLocationMapLoading();
+      }
+    },
   });
 }
 
-function initMap(token) {
-  return new Promise((resolve) => {
-    map = createStepMap({
-      container: 'location-map',
-      center: [-1.5, 53.0], // Centre of UK
-      zoom: 6,
-      pitch: 0,
-      bearing: 0,
-      maxBounds: [[-12, 49], [4, 61]], // UK bounds
-      onLoad: () => {
-        if (token === mapInitToken) {
-          hideLocationMapLoading();
-        }
-        resolve();
-      },
-    });
+function bindMapInteractions() {
+  if (!map) return;
 
-    map.on('click', (e) => {
-      const { lng, lat } = e.lngLat;
-      reverseGeocode(lat, lng);
-    });
+  map.on('click', (e) => {
+    const { lng, lat } = e.lngLat;
+    reverseGeocode(lat, lng);
   });
 }
 
@@ -350,7 +347,7 @@ function setLocation(lat, lng, displayName, options = {}) {
   const el = document.createElement('div');
   el.style.cssText = 'width: 30px; height: 30px; background: var(--accent); border-radius: 50%; border: 3px solid white; box-shadow: 0 0 20px rgba(245,158,11,0.5); cursor: pointer;';
   
-  marker = new maplibregl.Marker({ element: el })
+  marker = new mapRuntime.maplibregl.Marker({ element: el })
     .setLngLat([lng, lat])
     .addTo(map);
 
@@ -389,8 +386,6 @@ function setGuideStatus(elementId, label, done = false) {
 }
 
 export function cleanup() {
-  mapInitToken += 1;
-
   if (searchTimeout) {
     clearTimeout(searchTimeout);
     searchTimeout = null;
@@ -405,10 +400,8 @@ export function cleanup() {
     outsideClickHandler = null;
   }
 
-  if (map) {
-    map.remove();
-    map = null;
-  }
+  mapSession.destroy();
+  map = null;
   marker = null;
 }
 

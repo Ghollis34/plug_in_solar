@@ -19,6 +19,7 @@ const defaultState = {
   selectedSpaceId: null,
   obstacles: [],        // [{ id, type, ... }]
   sunAnalysis: null,    // { bestSpaceId, scores: [...], date }
+  annualUsageKwh: null, // Estimated household electricity usage per year
   selectedKit: null,    // persisted as kit id reference
   results: null,        // { annualKwh, annualSavings, paybackYears, ... }
 };

@@ -4,6 +4,10 @@ import { distancePointToSegment, getRectangleRing, latLngToMeters, metersToLatLn
 
 const DEFAULT_STYLE = 'https://tiles.openfreemap.org/styles/bright';
 const BUILDING_LAYER_ID = '3d-buildings';
+const DEFAULT_INTERACTIVE_MAX_ZOOM = 22;
+const SATELLITE_NATIVE_MAX_ZOOM = 19;
+const SATELLITE_ACTIVE_CONTRAST = 0.08;
+const SATELLITE_ACTIVE_SATURATION = 0.06;
 const SATELLITE_SOURCE_ID = 'esri-satellite';
 const SATELLITE_LAYER_ID = 'esri-satellite-layer';
 const SATELLITE_TOGGLE_CLASS = 'satellite-toggle-btn';
@@ -16,6 +20,14 @@ const HEATMAP_OUTLINE_ID = 'sun-suitability-outline';
 const SHADOW_SOURCE_ID = 'dynamic-shadow-source';
 const SHADOW_FILL_ID = 'dynamic-shadow-fill';
 const SHADOW_OUTLINE_ID = 'dynamic-shadow-outline';
+const OBSTACLE_FENCE_SOURCE_ID = 'obstacle-fences-source';
+const OBSTACLE_FENCE_FILL_ID = 'obstacle-fences';
+const OBSTACLE_FENCE_OUTLINE_ID = 'obstacle-fence-outline';
+const OBSTACLE_TREE_SOURCE_ID = 'obstacle-trees-source';
+const OBSTACLE_TREE_LAYER_ID = 'obstacle-trees';
+const OBSTACLE_SHED_SOURCE_ID = 'obstacle-sheds-source';
+const OBSTACLE_SHED_FILL_ID = 'obstacle-sheds';
+const OBSTACLE_SHED_OUTLINE_ID = 'obstacle-shed-outline';
 const MAP_INTERACTION_HINT_CLASS = 'map-interaction-hint';
 const EMPTY_FEATURE_COLLECTION = { type: 'FeatureCollection', features: [] };
 
@@ -44,6 +56,7 @@ export function createStepMap({
     pitch,
     bearing,
     maxBounds,
+    maxZoom: DEFAULT_INTERACTIVE_MAX_ZOOM,
   });
 
   map.addControl(new maplibregl.NavigationControl(), 'bottom-right');
@@ -112,7 +125,7 @@ export function addSatelliteSource(map) {
     tiles: [ESRI_TILE_URL],
     tileSize: 256,
     attribution: ESRI_ATTRIBUTION,
-    maxzoom: 19,
+    maxzoom: SATELLITE_NATIVE_MAX_ZOOM,
   });
 
   const insertBeforeId = getSatelliteInsertBeforeId(map);
@@ -121,7 +134,12 @@ export function addSatelliteSource(map) {
     type: 'raster',
     source: SATELLITE_SOURCE_ID,
     layout: { visibility: 'none' },
-    paint: { 'raster-opacity': 1 },
+    paint: {
+      'raster-opacity': 1,
+      'raster-resampling': 'linear',
+      'raster-contrast': 0,
+      'raster-saturation': 0,
+    },
   }, insertBeforeId);
 }
 
@@ -159,6 +177,15 @@ export function setSatelliteActive(map, active) {
   if (!map.getLayer(SATELLITE_LAYER_ID)) return false;
 
   map.setLayoutProperty(SATELLITE_LAYER_ID, 'visibility', active ? 'visible' : 'none');
+  if (typeof map.setMaxZoom === 'function') {
+    map.setMaxZoom(DEFAULT_INTERACTIVE_MAX_ZOOM);
+  }
+
+  if (map.getLayer(SATELLITE_LAYER_ID)) {
+    map.setPaintProperty(SATELLITE_LAYER_ID, 'raster-resampling', active ? 'nearest' : 'linear');
+    map.setPaintProperty(SATELLITE_LAYER_ID, 'raster-contrast', active ? SATELLITE_ACTIVE_CONTRAST : 0);
+    map.setPaintProperty(SATELLITE_LAYER_ID, 'raster-saturation', active ? SATELLITE_ACTIVE_SATURATION : 0);
+  }
 
   if (map.getLayer(BUILDING_LAYER_ID)) {
     map.setPaintProperty(BUILDING_LAYER_ID, 'fill-extrusion-opacity', active ? 0.18 : 0.75);
@@ -186,200 +213,60 @@ export function isSatelliteActive(map) {
   return map.getLayoutProperty(SATELLITE_LAYER_ID, 'visibility') === 'visible';
 }
 
-export function drawBuildingFootprintPreview(map, building) {
-  clearBuildingFootprintPreview(map);
-
-  const ring = getBuildingPreviewRing(building);
-  if (!ring?.length) {
-    return;
+export function hasUsableMapStyle(map) {
+  if (!map || typeof map.getStyle !== 'function') {
+    return false;
   }
 
-  map.addSource(BUILDING_PREVIEW_SOURCE_ID, {
-    type: 'geojson',
-    data: {
-      type: 'FeatureCollection',
-      features: [
-        {
-          type: 'Feature',
-          properties: {},
-          geometry: {
-            type: 'Polygon',
-            coordinates: [ring.map(({ lng, lat }) => [lng, lat])],
-          },
-        },
-      ],
-    },
-  });
+  try {
+    const style = map.getStyle();
+    return Array.isArray(style?.layers) && style.layers.length > 0;
+  } catch (error) {
+    return false;
+  }
+}
 
-  map.addLayer({
-    id: BUILDING_PREVIEW_FILL_ID,
-    type: 'fill',
-    source: BUILDING_PREVIEW_SOURCE_ID,
-    paint: {
-      'fill-color': 'rgba(59, 130, 246, 0.16)',
-    },
-  });
+export function drawBuildingFootprintPreview(map, building) {
+  if (!hasUsableMapStyle(map)) return false;
 
-  map.addLayer({
-    id: BUILDING_PREVIEW_OUTLINE_ID,
-    type: 'line',
-    source: BUILDING_PREVIEW_SOURCE_ID,
-    paint: {
-      'line-color': '#60A5FA',
-      'line-width': 2,
-      'line-opacity': 0.95,
-      'line-dasharray': [2, 1],
-    },
-  });
+  const data = getBuildingPreviewData(building);
+  ensureBuildingPreviewLayers(map, data);
+  setGeoJsonSourceData(map, BUILDING_PREVIEW_SOURCE_ID, data);
+  return true;
 }
 
 export function clearBuildingFootprintPreview(map) {
-  removeLayerIfExists(map, BUILDING_PREVIEW_FILL_ID);
-  removeLayerIfExists(map, BUILDING_PREVIEW_OUTLINE_ID);
-  removeSourceIfExists(map, BUILDING_PREVIEW_SOURCE_ID);
+  if (!hasUsableMapStyle(map)) return false;
+
+  if (map.getSource(BUILDING_PREVIEW_SOURCE_ID)) {
+    setGeoJsonSourceData(map, BUILDING_PREVIEW_SOURCE_ID, EMPTY_FEATURE_COLLECTION);
+  }
+
+  return true;
 }
 
 export function drawObstacles(map, obstacles = []) {
+  if (!hasUsableMapStyle(map)) return false;
+
   const normalizedObstacles = normalizeObstacles(obstacles);
-  const sourceDefs = [
-    ['obstacle-fences', 'obstacle-fences-source'],
-    ['obstacle-fence-outline', 'obstacle-fences-source'],
-    ['obstacle-trees', 'obstacle-trees-source'],
-    ['obstacle-sheds', 'obstacle-sheds-source'],
-    ['obstacle-shed-outline', 'obstacle-sheds-source'],
-  ];
+  const {
+    fenceData,
+    treeData,
+    shedData,
+  } = buildObstacleFeatureCollections(normalizedObstacles);
 
-  sourceDefs.forEach(([layerId]) => removeLayerIfExists(map, layerId));
-  ['obstacle-fences-source', 'obstacle-trees-source', 'obstacle-sheds-source'].forEach(id => removeSourceIfExists(map, id));
-
-  if (!normalizedObstacles.length) return;
-
-  const fenceFeatures = [];
-  const treeFeatures = [];
-  const shedFeatures = [];
-
-  normalizedObstacles.forEach((obs) => {
-    if (obs.type === 'fence' && obs.points?.length >= 2) {
-      const ring = getBufferedFenceRing(obs.points[0], obs.points[1], 0.2);
-      fenceFeatures.push({
-        type: 'Feature',
-        properties: { id: obs.id, heightM: obs.heightM, label: `Fence ${obs.heightM}m` },
-        geometry: {
-          type: 'Polygon',
-          coordinates: [ring.map((point) => [point.lng, point.lat])],
-        },
-      });
-    } else if (obs.type === 'tree' && Number.isFinite(obs.lat) && Number.isFinite(obs.lng)) {
-      treeFeatures.push({
-        type: 'Feature',
-        properties: { id: obs.id, heightM: obs.heightM, canopyRadiusM: obs.canopyRadiusM },
-        geometry: {
-          type: 'Point',
-          coordinates: [obs.lng, obs.lat],
-        },
-      });
-    } else if (obs.type === 'shed' && Number.isFinite(obs.lat) && Number.isFinite(obs.lng)) {
-      const widthM = obs.widthM || 3;
-      const depthM = obs.depthM || 2;
-      const rotationDeg = obs.rotationDeg || 0;
-      const ring = getRectangleRing(obs.lat, obs.lng, widthM, depthM, rotationDeg);
-
-      shedFeatures.push({
-        type: 'Feature',
-        properties: { id: obs.id, heightM: obs.heightM },
-        geometry: {
-          type: 'Polygon',
-          coordinates: [ring.map(({ lng, lat }) => [lng, lat])],
-        },
-      });
-    }
+  ensureObstacleLayers(map, {
+    fenceData,
+    treeData,
+    shedData,
   });
 
-  if (fenceFeatures.length) {
-    map.addSource('obstacle-fences-source', {
-      type: 'geojson',
-      data: { type: 'FeatureCollection', features: fenceFeatures },
-    });
-
-    map.addLayer({
-      id: 'obstacle-fences',
-      type: 'fill-extrusion',
-      source: 'obstacle-fences-source',
-      paint: {
-        'fill-extrusion-color': '#F97316',
-        'fill-extrusion-height': ['coalesce', ['get', 'heightM'], 1.8],
-        'fill-extrusion-base': 0,
-        'fill-extrusion-opacity': 0.72,
-      },
-    });
-
-    map.addLayer({
-      id: 'obstacle-fence-outline',
-      type: 'line',
-      source: 'obstacle-fences-source',
-      paint: {
-        'line-color': '#FDBA74',
-        'line-width': 1.6,
-        'line-opacity': 0.9,
-      },
-    });
-  }
-
-  if (treeFeatures.length) {
-    map.addSource('obstacle-trees-source', {
-      type: 'geojson',
-      data: { type: 'FeatureCollection', features: treeFeatures },
-    });
-
-    map.addLayer({
-      id: 'obstacle-trees',
-      type: 'circle',
-      source: 'obstacle-trees-source',
-      paint: {
-        'circle-color': 'rgba(34, 197, 94, 0.32)',
-        'circle-radius': [
-          'interpolate',
-          ['linear'],
-          ['zoom'],
-          16, ['+', 6, ['*', ['coalesce', ['get', 'canopyRadiusM'], 3], 1.4]],
-          20, ['+', 14, ['*', ['coalesce', ['get', 'canopyRadiusM'], 3], 2.7]],
-        ],
-        'circle-stroke-color': '#22C55E',
-        'circle-stroke-width': 2,
-      },
-    });
-  }
-
-  if (shedFeatures.length) {
-    map.addSource('obstacle-sheds-source', {
-      type: 'geojson',
-      data: { type: 'FeatureCollection', features: shedFeatures },
-    });
-
-    map.addLayer({
-      id: 'obstacle-sheds',
-      type: 'fill-extrusion',
-      source: 'obstacle-sheds-source',
-      paint: {
-        'fill-extrusion-color': '#94A3B8',
-        'fill-extrusion-height': ['coalesce', ['get', 'heightM'], 2.5],
-        'fill-extrusion-base': 0,
-        'fill-extrusion-opacity': 0.62,
-      },
-    });
-
-    map.addLayer({
-      id: 'obstacle-shed-outline',
-      type: 'line',
-      source: 'obstacle-sheds-source',
-      paint: {
-        'line-color': '#CBD5E1',
-        'line-width': 2,
-      },
-    });
-  }
+  setGeoJsonSourceData(map, OBSTACLE_FENCE_SOURCE_ID, fenceData);
+  setGeoJsonSourceData(map, OBSTACLE_TREE_SOURCE_ID, treeData);
+  setGeoJsonSourceData(map, OBSTACLE_SHED_SOURCE_ID, shedData);
 
   forceMapRepaint(map);
+  return true;
 }
 
 export function normalizeObstacles(obstacles = []) {
@@ -484,66 +371,30 @@ function toFiniteNumber(value, fallback) {
 }
 
 export function drawSuitabilityHeatmap(map, featureCollection) {
-  removeLayerIfExists(map, HEATMAP_LAYER_ID);
-  removeLayerIfExists(map, HEATMAP_OUTLINE_ID);
-  removeLayerIfExists(map, `${HEATMAP_LAYER_ID}-points`);
-  removeSourceIfExists(map, HEATMAP_SOURCE_ID);
+  if (!hasUsableMapStyle(map)) return false;
 
-  if (!featureCollection?.features?.length) return;
+  const data = featureCollection?.features?.length
+    ? featureCollection
+    : EMPTY_FEATURE_COLLECTION;
 
-  map.addSource(HEATMAP_SOURCE_ID, {
-    type: 'geojson',
-    data: featureCollection,
-  });
-
-  map.addLayer({
-    id: HEATMAP_LAYER_ID,
-    type: 'fill',
-    source: HEATMAP_SOURCE_ID,
-    paint: {
-      'fill-color': [
-        'interpolate',
-        ['linear'],
-        ['get', 'score'],
-        0, 'rgba(220, 38, 38, 0.62)',
-        0.28, 'rgba(249, 115, 22, 0.68)',
-        0.5, 'rgba(250, 204, 21, 0.72)',
-        0.72, 'rgba(132, 204, 22, 0.76)',
-        1, 'rgba(22, 163, 74, 0.82)',
-      ],
-      'fill-opacity': isSatelliteActive(map) ? 0.58 : 0.42,
-    },
-  }, BUILDING_LAYER_ID);
-
-  map.addLayer({
-    id: HEATMAP_OUTLINE_ID,
-    type: 'line',
-    source: HEATMAP_SOURCE_ID,
-    paint: {
-      'line-color': [
-        'interpolate',
-        ['linear'],
-        ['get', 'score'],
-        0, 'rgba(220, 38, 38, 0.82)',
-        0.28, 'rgba(249, 115, 22, 0.82)',
-        0.5, 'rgba(250, 204, 21, 0.85)',
-        0.72, 'rgba(132, 204, 22, 0.88)',
-        1, 'rgba(22, 163, 74, 0.9)',
-      ],
-      'line-width': 0.35,
-      'line-opacity': isSatelliteActive(map) ? 0.05 : 0.025,
-    },
-  }, BUILDING_LAYER_ID);
+  ensureSuitabilityHeatmapLayers(map, data);
+  setGeoJsonSourceData(map, HEATMAP_SOURCE_ID, data);
+  return true;
 }
 
 export function clearSuitabilityHeatmap(map) {
-  removeLayerIfExists(map, HEATMAP_LAYER_ID);
-  removeLayerIfExists(map, HEATMAP_OUTLINE_ID);
-  removeLayerIfExists(map, `${HEATMAP_LAYER_ID}-points`);
-  removeSourceIfExists(map, HEATMAP_SOURCE_ID);
+  if (!hasUsableMapStyle(map)) return false;
+
+  if (map.getSource(HEATMAP_SOURCE_ID)) {
+    setGeoJsonSourceData(map, HEATMAP_SOURCE_ID, EMPTY_FEATURE_COLLECTION);
+  }
+
+  return true;
 }
 
 export function drawDynamicShadows(map, featureCollection) {
+  if (!hasUsableMapStyle(map)) return false;
+
   const data = featureCollection?.type === 'FeatureCollection'
     ? featureCollection
     : EMPTY_FEATURE_COLLECTION;
@@ -552,15 +403,11 @@ export function drawDynamicShadows(map, featureCollection) {
 
   const source = map.getSource(SHADOW_SOURCE_ID);
   source?.setData(data);
+  return true;
 }
 
 function ensureDynamicShadowLayers(map, initialData = EMPTY_FEATURE_COLLECTION) {
-  if (!map.getSource(SHADOW_SOURCE_ID)) {
-    map.addSource(SHADOW_SOURCE_ID, {
-      type: 'geojson',
-      data: initialData,
-    });
-  }
+  ensureGeoJsonSource(map, SHADOW_SOURCE_ID, initialData);
 
   if (!map.getLayer(SHADOW_FILL_ID)) {
     map.addLayer({
@@ -714,6 +561,252 @@ export function getShadeModelBuildings(map, existingBuildings = [], options = {}
   return merged;
 }
 
+function getBuildingPreviewData(building) {
+  const ring = getBuildingPreviewRing(building);
+  if (!ring?.length) {
+    return EMPTY_FEATURE_COLLECTION;
+  }
+
+  return {
+    type: 'FeatureCollection',
+    features: [
+      {
+        type: 'Feature',
+        properties: {},
+        geometry: {
+          type: 'Polygon',
+          coordinates: [ring.map(({ lng, lat }) => [lng, lat])],
+        },
+      },
+    ],
+  };
+}
+
+function buildObstacleFeatureCollections(normalizedObstacles = []) {
+  const fenceFeatures = [];
+  const treeFeatures = [];
+  const shedFeatures = [];
+
+  normalizedObstacles.forEach((obs) => {
+    if (obs.type === 'fence' && obs.points?.length >= 2) {
+      const ring = getBufferedFenceRing(obs.points[0], obs.points[1], 0.2);
+      fenceFeatures.push({
+        type: 'Feature',
+        properties: { id: obs.id, heightM: obs.heightM, label: `Fence ${obs.heightM}m` },
+        geometry: {
+          type: 'Polygon',
+          coordinates: [ring.map((point) => [point.lng, point.lat])],
+        },
+      });
+      return;
+    }
+
+    if (obs.type === 'tree' && Number.isFinite(obs.lat) && Number.isFinite(obs.lng)) {
+      treeFeatures.push({
+        type: 'Feature',
+        properties: { id: obs.id, heightM: obs.heightM, canopyRadiusM: obs.canopyRadiusM },
+        geometry: {
+          type: 'Point',
+          coordinates: [obs.lng, obs.lat],
+        },
+      });
+      return;
+    }
+
+    if (obs.type === 'shed' && Number.isFinite(obs.lat) && Number.isFinite(obs.lng)) {
+      const widthM = obs.widthM || 3;
+      const depthM = obs.depthM || 2;
+      const rotationDeg = obs.rotationDeg || 0;
+      const ring = getRectangleRing(obs.lat, obs.lng, widthM, depthM, rotationDeg);
+
+      shedFeatures.push({
+        type: 'Feature',
+        properties: { id: obs.id, heightM: obs.heightM },
+        geometry: {
+          type: 'Polygon',
+          coordinates: [ring.map(({ lng, lat }) => [lng, lat])],
+        },
+      });
+    }
+  });
+
+  return {
+    fenceData: { type: 'FeatureCollection', features: fenceFeatures },
+    treeData: { type: 'FeatureCollection', features: treeFeatures },
+    shedData: { type: 'FeatureCollection', features: shedFeatures },
+  };
+}
+
+function ensureBuildingPreviewLayers(map, initialData = EMPTY_FEATURE_COLLECTION) {
+  ensureGeoJsonSource(map, BUILDING_PREVIEW_SOURCE_ID, initialData);
+
+  if (!map.getLayer(BUILDING_PREVIEW_FILL_ID)) {
+    map.addLayer({
+      id: BUILDING_PREVIEW_FILL_ID,
+      type: 'fill',
+      source: BUILDING_PREVIEW_SOURCE_ID,
+      paint: {
+        'fill-color': 'rgba(59, 130, 246, 0.16)',
+      },
+    });
+  }
+
+  if (!map.getLayer(BUILDING_PREVIEW_OUTLINE_ID)) {
+    map.addLayer({
+      id: BUILDING_PREVIEW_OUTLINE_ID,
+      type: 'line',
+      source: BUILDING_PREVIEW_SOURCE_ID,
+      paint: {
+        'line-color': '#60A5FA',
+        'line-width': 2,
+        'line-opacity': 0.95,
+        'line-dasharray': [2, 1],
+      },
+    });
+  }
+}
+
+function ensureObstacleLayers(map, initialData = {}) {
+  ensureGeoJsonSource(map, OBSTACLE_FENCE_SOURCE_ID, initialData.fenceData || EMPTY_FEATURE_COLLECTION);
+  ensureGeoJsonSource(map, OBSTACLE_TREE_SOURCE_ID, initialData.treeData || EMPTY_FEATURE_COLLECTION);
+  ensureGeoJsonSource(map, OBSTACLE_SHED_SOURCE_ID, initialData.shedData || EMPTY_FEATURE_COLLECTION);
+
+  if (!map.getLayer(OBSTACLE_FENCE_FILL_ID)) {
+    map.addLayer({
+      id: OBSTACLE_FENCE_FILL_ID,
+      type: 'fill-extrusion',
+      source: OBSTACLE_FENCE_SOURCE_ID,
+      paint: {
+        'fill-extrusion-color': '#F97316',
+        'fill-extrusion-height': ['coalesce', ['get', 'heightM'], 1.8],
+        'fill-extrusion-base': 0,
+        'fill-extrusion-opacity': 0.72,
+      },
+    });
+  }
+
+  if (!map.getLayer(OBSTACLE_FENCE_OUTLINE_ID)) {
+    map.addLayer({
+      id: OBSTACLE_FENCE_OUTLINE_ID,
+      type: 'line',
+      source: OBSTACLE_FENCE_SOURCE_ID,
+      paint: {
+        'line-color': '#FDBA74',
+        'line-width': 1.6,
+        'line-opacity': 0.9,
+      },
+    });
+  }
+
+  if (!map.getLayer(OBSTACLE_TREE_LAYER_ID)) {
+    map.addLayer({
+      id: OBSTACLE_TREE_LAYER_ID,
+      type: 'circle',
+      source: OBSTACLE_TREE_SOURCE_ID,
+      paint: {
+        'circle-color': 'rgba(34, 197, 94, 0.32)',
+        'circle-radius': [
+          'interpolate',
+          ['linear'],
+          ['zoom'],
+          16, ['+', 6, ['*', ['coalesce', ['get', 'canopyRadiusM'], 3], 1.4]],
+          20, ['+', 14, ['*', ['coalesce', ['get', 'canopyRadiusM'], 3], 2.7]],
+        ],
+        'circle-stroke-color': '#22C55E',
+        'circle-stroke-width': 2,
+      },
+    });
+  }
+
+  if (!map.getLayer(OBSTACLE_SHED_FILL_ID)) {
+    map.addLayer({
+      id: OBSTACLE_SHED_FILL_ID,
+      type: 'fill-extrusion',
+      source: OBSTACLE_SHED_SOURCE_ID,
+      paint: {
+        'fill-extrusion-color': '#94A3B8',
+        'fill-extrusion-height': ['coalesce', ['get', 'heightM'], 2.5],
+        'fill-extrusion-base': 0,
+        'fill-extrusion-opacity': 0.62,
+      },
+    });
+  }
+
+  if (!map.getLayer(OBSTACLE_SHED_OUTLINE_ID)) {
+    map.addLayer({
+      id: OBSTACLE_SHED_OUTLINE_ID,
+      type: 'line',
+      source: OBSTACLE_SHED_SOURCE_ID,
+      paint: {
+        'line-color': '#CBD5E1',
+        'line-width': 2,
+      },
+    });
+  }
+}
+
+function ensureSuitabilityHeatmapLayers(map, initialData = EMPTY_FEATURE_COLLECTION) {
+  ensureGeoJsonSource(map, HEATMAP_SOURCE_ID, initialData);
+  const insertBeforeId = map.getLayer(BUILDING_LAYER_ID) ? BUILDING_LAYER_ID : undefined;
+
+  if (!map.getLayer(HEATMAP_LAYER_ID)) {
+    map.addLayer({
+      id: HEATMAP_LAYER_ID,
+      type: 'fill',
+      source: HEATMAP_SOURCE_ID,
+      paint: {
+        'fill-color': [
+          'interpolate',
+          ['linear'],
+          ['get', 'score'],
+          0, 'rgba(220, 38, 38, 0.62)',
+          0.28, 'rgba(249, 115, 22, 0.68)',
+          0.5, 'rgba(250, 204, 21, 0.72)',
+          0.72, 'rgba(132, 204, 22, 0.76)',
+          1, 'rgba(22, 163, 74, 0.82)',
+        ],
+        'fill-opacity': isSatelliteActive(map) ? 0.58 : 0.42,
+      },
+    }, insertBeforeId);
+  }
+
+  if (!map.getLayer(HEATMAP_OUTLINE_ID)) {
+    map.addLayer({
+      id: HEATMAP_OUTLINE_ID,
+      type: 'line',
+      source: HEATMAP_SOURCE_ID,
+      paint: {
+        'line-color': [
+          'interpolate',
+          ['linear'],
+          ['get', 'score'],
+          0, 'rgba(220, 38, 38, 0.82)',
+          0.28, 'rgba(249, 115, 22, 0.82)',
+          0.5, 'rgba(250, 204, 21, 0.85)',
+          0.72, 'rgba(132, 204, 22, 0.88)',
+          1, 'rgba(22, 163, 74, 0.9)',
+        ],
+        'line-width': 0.35,
+        'line-opacity': isSatelliteActive(map) ? 0.05 : 0.025,
+      },
+    }, insertBeforeId);
+  }
+}
+
+function ensureGeoJsonSource(map, sourceId, initialData = EMPTY_FEATURE_COLLECTION) {
+  if (!map.getSource(sourceId)) {
+    map.addSource(sourceId, {
+      type: 'geojson',
+      data: initialData,
+    });
+  }
+}
+
+function setGeoJsonSourceData(map, sourceId, data) {
+  const source = map.getSource(sourceId);
+  source?.setData(data);
+}
+
 export function captureBuildingAtLocation(map, center, options = {}) {
   const searchRadiusM = options.searchRadiusM ?? 24;
 
@@ -754,18 +847,6 @@ export function captureBuildingAtLocation(map, center, options = {}) {
   });
 
   return bestMatch;
-}
-
-function removeLayerIfExists(map, layerId) {
-  if (map.getLayer(layerId)) {
-    map.removeLayer(layerId);
-  }
-}
-
-function removeSourceIfExists(map, sourceId) {
-  if (map.getSource(sourceId)) {
-    map.removeSource(sourceId);
-  }
 }
 
 function addMapInteractionHint(map, customText) {

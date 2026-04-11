@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   normalizeLocation,
   normalizeObstacle,
+  normalizeAnnualUsageKwh,
   normalizePersistedState,
   normalizeSelectedKit,
   normalizeSpace,
@@ -82,6 +83,12 @@ describe('state normalizers', () => {
     })).toEqual({ id: 'kit-1' });
   });
 
+  it('allows blank annual usage and clamps custom values', () => {
+    expect(normalizeAnnualUsageKwh('')).toBeNull();
+    expect(normalizeAnnualUsageKwh(42)).toBe(100);
+    expect(normalizeAnnualUsageKwh(3200)).toBe(3200);
+  });
+
   it('reconciles invalid selected space and stale analysis', () => {
     const defaultState = {
       currentStep: 0,
@@ -92,6 +99,7 @@ describe('state normalizers', () => {
       selectedSpaceId: null,
       obstacles: [],
       sunAnalysis: null,
+      annualUsageKwh: null,
       selectedKit: null,
       results: null,
     };

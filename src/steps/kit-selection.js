@@ -1,6 +1,7 @@
 import kitsData from '../data/kits.json';
 import { getState, setState } from '../utils/state.js';
 import { escapeHtml, safeDataId } from '../utils/security.js';
+import { getSpacesState } from '../utils/site-state.js';
 
 let activeFilters = { wattage: 'all', brand: 'all' };
 
@@ -118,7 +119,7 @@ function renderKitSection(title, subtitle, kits, selectedId) {
 
 function renderKitCard(kit, selectedId) {
   const isSelected = kit.id === selectedId;
-  const spaces = getState('spaces') || [];
+  const spaces = getSpacesState();
   const spaceTypes = spaces.map((space) => space.type);
   const isCompatible = kit.mountingTypes.some((mountType) => spaceTypes.includes(mountType)) || spaceTypes.length === 0;
 

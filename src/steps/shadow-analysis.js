@@ -1,22 +1,25 @@
-import { getState, setState } from '../utils/state.js';
+import { setState } from '../utils/state.js';
 import { getSunTimes, getMapLightFromSun, getShadowOverlayFeatures, rankSpaces, samplePlacementHeatmap } from '../utils/sun.js';
 import { escapeHtml } from '../utils/security.js';
-import { loadMapRuntime } from '../utils/map-runtime.js';
+import { createMapStepSession } from '../utils/map-step-session.js';
+import {
+  getAnalysisCenter,
+  getBuildingsState,
+  getLocationState,
+  getObstaclesState,
+  getSelectedSpaceIdState,
+  getSpacesState,
+  getSunAnalysisScores,
+} from '../utils/site-state.js';
 
 let map = null;
 let animationFrame = null;
 let isAnimating = false;
 let markers = [];
 let selectedSpaceId = null;
-let mapInitToken = 0;
-let maplibregl = null;
-let createPanelMarkerElement = null;
-let createStepMap = null;
-let drawDynamicShadows = null;
-let drawObstacles = null;
-let drawSuitabilityHeatmap = null;
-let getShadeModelBuildings = null;
-let updatePanelMarkerElement = null;
+let mapRuntime = null;
+
+const mapSession = createMapStepSession();
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -117,9 +120,9 @@ export function render() {
 }
 
 export function init() {
-  const location = getState('location');
+  const location = getLocationState();
   if (!location) return;
-  selectedSpaceId = getState('selectedSpaceId');
+  selectedSpaceId = getSelectedSpaceIdState();
 
   document.getElementById('btn-back-shadow')?.addEventListener('click', () => {
     stopAnimation();
@@ -131,76 +134,58 @@ export function init() {
     window.dispatchEvent(new CustomEvent('wizard:next'));
   });
 
-  const token = ++mapInitToken;
+  const token = mapSession.beginRun();
   showShadowMapLoading('Loading shadow model…');
 
-  ensureMapRuntime()
-    .then(() => {
-      if (token !== mapInitToken) return;
+  mapSession.ensureRuntime(token)
+    .then((runtime) => {
+      if (!runtime) return null;
+      mapRuntime = runtime;
       initControls();
       updateSunInfo();
       return initMap(location, token);
     })
     .then(() => {
-      if (token !== mapInitToken) return;
+      if (!mapSession.isCurrent(token)) return;
       window.setTimeout(() => {
-        if (token !== mapInitToken) return;
+        if (!mapSession.isCurrent(token)) return;
         runAnalysis();
       }, 100);
     })
     .catch((error) => {
-      if (token !== mapInitToken) return;
+      if (!mapSession.isCurrent(token)) return;
       console.error('Failed to load shadow analysis map:', error);
       showShadowMapLoading('Failed to load shadow map. Refresh or try again.');
     });
 }
 
-function ensureMapRuntime() {
-  if (maplibregl && createStepMap && drawDynamicShadows) {
-    return Promise.resolve();
-  }
-
-  return loadMapRuntime().then((runtime) => {
-    maplibregl = runtime.maplibregl;
-    createPanelMarkerElement = runtime.createPanelMarkerElement;
-    createStepMap = runtime.createStepMap;
-    drawDynamicShadows = runtime.drawDynamicShadows;
-    drawObstacles = runtime.drawObstacles;
-    drawSuitabilityHeatmap = runtime.drawSuitabilityHeatmap;
-    getShadeModelBuildings = runtime.getShadeModelBuildings;
-    updatePanelMarkerElement = runtime.updatePanelMarkerElement;
-  });
-}
-
 function initMap(location, token) {
-  const analysisCenter = getAnalysisCenter(location, getState('buildings') || []);
-  return new Promise((resolve) => {
-    map = createStepMap({
-      container: 'shadow-map',
-      center: [analysisCenter.lng, analysisCenter.lat],
-      zoom: 18.4,
-      pitch: 55,
-      bearing: -24,
-      onLoad: () => {
-        addSpaceMarkers();
-        drawObstacles(map, getState('obstacles') || []);
-        const center = getAnalysisCenter(location, getState('buildings') || []);
-        drawSuitabilityHeatmap(map, samplePlacementHeatmap(center.lat, center.lng, getAnalysisBuildings(location), getState('obstacles') || []));
-        updateShadows();
-        if (token === mapInitToken) {
-          hideShadowMapLoading();
-        }
-        resolve();
-      },
-    });
+  const analysisCenter = getAnalysisCenter(null, location);
+  return mapSession.createMap(token, {
+    container: 'shadow-map',
+    center: [analysisCenter.lng, analysisCenter.lat],
+    zoom: 18.4,
+    pitch: 55,
+    bearing: -24,
+    onLoad: (mapInstance) => {
+      map = mapInstance;
+      addSpaceMarkers();
+      mapRuntime.drawObstacles(map, getObstaclesState());
+      const center = getAnalysisCenter(null, location);
+      mapRuntime.drawSuitabilityHeatmap(map, samplePlacementHeatmap(center.lat, center.lng, getAnalysisBuildings(location), getObstaclesState()));
+      updateShadows();
+      if (mapSession.isCurrent(token)) {
+        hideShadowMapLoading();
+      }
+    },
   });
 }
 
 function addSpaceMarkers() {
-  const spaces = getState('spaces') || [];
+  const spaces = getSpacesState();
 
   spaces.forEach((space) => {
-    const el = createPanelMarkerElement(space, {
+    const el = mapRuntime.createPanelMarkerElement(space, {
       compact: true,
       onClick: (event) => {
         event.stopPropagation();
@@ -208,7 +193,7 @@ function addSpaceMarkers() {
       },
     });
 
-    const marker = new maplibregl.Marker({ element: el })
+    const marker = new mapRuntime.maplibregl.Marker({ element: el })
       .setLngLat([space.centerLng, space.centerLat])
       .addTo(map);
 
@@ -245,7 +230,7 @@ function getSelectedDate() {
 }
 
 function getTimeFromSlider() {
-  const location = getState('location');
+  const location = getLocationState();
   const date = getSelectedDate();
   const times = getSunTimes(date, location.lat, location.lng);
   const sliderVal = parseInt(document.getElementById('time-slider')?.value || 48, 10);
@@ -264,52 +249,43 @@ function getTimeFromSlider() {
 }
 
 function updateShadows() {
-  const location = getState('location');
+  const location = getLocationState();
   if (!location || !map) return;
 
   const time = getTimeFromSlider();
   const buildings = getAnalysisBuildings(location);
-  const obstacles = getState('obstacles') || [];
+  const obstacles = getObstaclesState();
   const lightProps = getMapLightFromSun(time, location.lat, location.lng);
 
   document.getElementById('time-display').textContent =
     time.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
 
-  if (map.isStyleLoaded()) {
-    drawDynamicShadows(map, getShadowOverlayFeatures(time, location.lat, location.lng, buildings, obstacles));
+  if (!mapRuntime.drawDynamicShadows(map, getShadowOverlayFeatures(time, location.lat, location.lng, buildings, obstacles))) {
+    return;
+  }
 
-    try {
-      map.setLight({
-        anchor: 'map',
-        position: [1.5, lightProps.position[1], Math.max(10, lightProps.position[2])],
-        intensity: lightProps.intensity,
-        color: lightProps.color,
-      });
-    } catch (error) {
-      // Some style/light combinations still ignore setLight; the analysis itself is unaffected.
-    }
+  try {
+    map.setLight({
+      anchor: 'map',
+      position: [1.5, lightProps.position[1], Math.max(10, lightProps.position[2])],
+      intensity: lightProps.intensity,
+      color: lightProps.color,
+    });
+  } catch (error) {
+    // Some style/light combinations still ignore setLight; the analysis itself is unaffected.
   }
 }
 
 function getAnalysisBuildings(location) {
-  const buildings = getState('buildings') || [];
-  return getShadeModelBuildings(map, buildings, {
-    center: getAnalysisCenter(location, buildings),
+  const buildings = getBuildingsState();
+  return mapRuntime.getShadeModelBuildings(map, buildings, {
+    center: getAnalysisCenter(null, location),
     radiusM: 120,
   });
 }
 
-function getAnalysisCenter(location, buildings) {
-  const userBuilding = buildings.find((building) => building.kind === 'user' || building.id === 'user-building');
-  if (Number.isFinite(userBuilding?.lat) && Number.isFinite(userBuilding?.lng)) {
-    return { lat: userBuilding.lat, lng: userBuilding.lng };
-  }
-
-  return { lat: location.lat, lng: location.lng };
-}
-
 function updateSunInfo() {
-  const location = getState('location');
+  const location = getLocationState();
   if (!location) return;
 
   const date = getSelectedDate();
@@ -357,10 +333,10 @@ function stopAnimation() {
 }
 
 function runAnalysis() {
-  const location = getState('location');
-  const spaces = getState('spaces') || [];
+  const location = getLocationState();
+  const spaces = getSpacesState();
   const buildings = getAnalysisBuildings(location);
-  const obstacles = getState('obstacles') || [];
+  const obstacles = getObstaclesState();
 
   if (spaces.length === 0) return;
 
@@ -459,7 +435,7 @@ function renderSelectionSummary(ranked) {
 function selectSpace(spaceId) {
   selectedSpaceId = spaceId;
   setState({ selectedSpaceId: spaceId });
-  const ranked = getState('sunAnalysis')?.scores || [];
+  const ranked = getSunAnalysisScores();
   renderSelectionSummary(ranked);
   renderRankingCards(ranked);
   applyMarkerSelectionStyles();
@@ -468,8 +444,8 @@ function selectSpace(spaceId) {
 function applyMarkerSelectionStyles() {
   markers.forEach((entry) => {
     const isSelected = entry.id === selectedSpaceId;
-    const space = (getState('spaces') || []).find((item) => item.id === entry.id) || { id: entry.id };
-    updatePanelMarkerElement(entry.element, space, { selected: isSelected });
+    const space = getSpacesState().find((item) => item.id === entry.id) || { id: entry.id };
+    mapRuntime.updatePanelMarkerElement(entry.element, space, { selected: isSelected });
     entry.marker.setLngLat(entry.marker.getLngLat());
   });
 }
@@ -514,14 +490,10 @@ function hideShadowMapLoading() {
 }
 
 export function cleanup() {
-  mapInitToken += 1;
   stopAnimation();
   markers.forEach((entry) => entry.marker.remove());
   markers = [];
   selectedSpaceId = null;
-
-  if (map) {
-    map.remove();
-    map = null;
-  }
+  mapSession.destroy();
+  map = null;
 }

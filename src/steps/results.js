@@ -5,6 +5,16 @@ import { fetchSolarData, adjustForShadows } from '../utils/pvgis.js';
 import { calculateROI, formatCurrency, formatPayback } from '../utils/roi.js';
 import config from '../data/config.json';
 import { escapeHtml, safeDataId, sanitizeExternalUrl } from '../utils/security.js';
+import {
+  DEFAULT_ANNUAL_USAGE_KWH,
+  DEFAULT_ANNUAL_USAGE_SOURCE,
+  getAnnualUsageInput,
+  getLocationState,
+  getRecommendedSpace,
+  getResolvedAnnualUsageKwh,
+  getSelectedOrRecommendedSpace,
+  isUsingDefaultAnnualUsage,
+} from '../utils/site-state.js';
 
 let charts = [];
 let calculationRequestId = 0;
@@ -17,6 +27,10 @@ const ALLOWED_RETAILER_HOSTS = [
 ];
 
 export function render() {
+  const annualUsageInput = getAnnualUsageInput();
+  const resolvedAnnualUsage = getResolvedAnnualUsageKwh();
+  const usingDefaultAnnualUsage = isUsingDefaultAnnualUsage();
+
   return `
     <div class="step-page scrollable">
       <div class="step-header">
@@ -34,6 +48,30 @@ export function render() {
 
         <div id="results-content" class="hidden">
           <div class="results-shell">
+            <div class="card-flat results-usage-card">
+              <div class="results-usage-header">
+                <div>
+                  <div class="results-kicker">Home usage assumption</div>
+                  <h3 class="results-usage-title">Estimated yearly electricity use</h3>
+                </div>
+                <div class="map-panel-pill" id="annual-usage-pill">${usingDefaultAnnualUsage ? 'UK average active' : 'Custom value active'}</div>
+              </div>
+              <div class="results-usage-grid">
+                <div>
+                  <label class="form-label" for="annual-usage-input">Annual home usage (kWh)</label>
+                  <div class="results-usage-input-row">
+                    <input type="number" class="form-input" id="annual-usage-input" min="100" max="100000" step="50" value="${annualUsageInput ?? ''}" placeholder="${DEFAULT_ANNUAL_USAGE_KWH}" />
+                    <button class="btn btn-outline" id="btn-apply-usage" type="button">Update Quote</button>
+                  </div>
+                  <div class="analysis-note" id="annual-usage-helper">${getAnnualUsageHelperText(usingDefaultAnnualUsage, resolvedAnnualUsage)}</div>
+                </div>
+                <div class="results-usage-summary">
+                  <div class="results-usage-summary-label" id="annual-usage-source">${usingDefaultAnnualUsage ? DEFAULT_ANNUAL_USAGE_SOURCE : 'Using your household estimate'}</div>
+                  <div class="results-usage-summary-value" id="annual-usage-effective">${formatWholeNumber(resolvedAnnualUsage)} kWh/year</div>
+                  <button class="btn btn-secondary" id="btn-use-average-usage" type="button">Use UK Average</button>
+                </div>
+              </div>
+            </div>
             <div class="recommendation-card" id="recommendation-card"></div>
             <div class="results-grid" id="results-grid"></div>
             <div class="results-chart-grid">
@@ -78,16 +116,19 @@ export function init() {
     window.dispatchEvent(new CustomEvent('wizard:reset'));
   });
 
+  initUsageControls();
+  updateUsageAssumptionUi();
   calculateResults();
 }
 
 async function calculateResults() {
   const requestId = ++calculationRequestId;
-  const location = getState('location');
+  const location = getLocationState();
   const selectedKit = resolveSelectedKit(getState('selectedKit'));
-  const sunAnalysis = getState('sunAnalysis');
-  const spaces = getState('spaces') || [];
-  const selectedSpaceId = getState('selectedSpaceId');
+  const selectedSpace = getSelectedOrRecommendedSpace() || {};
+  const recommendedSpace = getRecommendedSpace() || selectedSpace;
+  const annualUsageKwh = getResolvedAnnualUsageKwh();
+  const usingDefaultAnnualUsage = isUsingDefaultAnnualUsage();
 
   if (!location || !selectedKit) {
     showError('Missing location or kit selection.');
@@ -95,13 +136,6 @@ async function calculateResults() {
   }
 
   try {
-    const rankedSpaces = sunAnalysis?.scores || [];
-    const selectedSpace = rankedSpaces.find((space) => space.id === selectedSpaceId)
-      || rankedSpaces[0]
-      || spaces.find((space) => space.id === selectedSpaceId)
-      || spaces[0]
-      || {};
-    const recommendedSpace = rankedSpaces[0] || selectedSpace;
     const orientation = selectedSpace.orientation || 180;
     const pvgisAzimuth = orientation - 180;
     const tilt = selectedSpace.tilt || 35;
@@ -113,10 +147,10 @@ async function calculateResults() {
     const conservativeFactor = clamp(selectedSpace.conservativeFactor ?? (baselineFactor - 0.14), 0, 1);
     const optimisticFactor = clamp(selectedSpace.optimisticFactor ?? (baselineFactor + 0.14), 0, 1);
 
-    const primaryScenario = buildScenario(selectedKit, solarData, baselineFactor, conservativeFactor, optimisticFactor);
+    const primaryScenario = buildScenario(selectedKit, solarData, baselineFactor, conservativeFactor, optimisticFactor, annualUsageKwh);
     const batteryUpgradeKit = getBatteryUpgradeKit(selectedKit);
     const upgradeScenario = batteryUpgradeKit
-      ? buildScenario(batteryUpgradeKit, solarData, baselineFactor, conservativeFactor, optimisticFactor)
+      ? buildScenario(batteryUpgradeKit, solarData, baselineFactor, conservativeFactor, optimisticFactor, annualUsageKwh)
       : null;
 
     setState({
@@ -141,6 +175,8 @@ async function calculateResults() {
       selectedSpace,
       recommendedSpace,
       solarData,
+      annualUsageKwh,
+      usingDefaultAnnualUsage,
     });
   } catch (error) {
     if (requestId !== calculationRequestId) return;
@@ -149,11 +185,11 @@ async function calculateResults() {
   }
 }
 
-function buildScenario(kit, solarData, baselineFactor, conservativeFactor, optimisticFactor) {
+function buildScenario(kit, solarData, baselineFactor, conservativeFactor, optimisticFactor, annualUsageKwh) {
   const adjusted = adjustForShadows(solarData, baselineFactor, kit.wattage);
   const conservativeAdjusted = adjustForShadows(solarData, conservativeFactor, kit.wattage);
   const optimisticAdjusted = adjustForShadows(solarData, optimisticFactor, kit.wattage);
-  const valueModel = estimateEnergyValue(adjusted.annualKwh, kit);
+  const valueModel = estimateEnergyValue(adjusted.annualKwh, kit, annualUsageKwh);
   const roi = calculateROI({
     kitCost: kit.price,
     annualKwh: adjusted.annualKwh,
@@ -171,7 +207,7 @@ function buildScenario(kit, solarData, baselineFactor, conservativeFactor, optim
   };
 }
 
-function displayResults({ primaryScenario, upgradeScenario, selectedSpace, recommendedSpace, solarData }) {
+function displayResults({ primaryScenario, upgradeScenario, selectedSpace, recommendedSpace, solarData, annualUsageKwh, usingDefaultAnnualUsage }) {
   const { kit, roi, adjusted, conservativeAdjusted, optimisticAdjusted, valueModel } = primaryScenario;
   const exportPaymentEnabled = hasExportPayment();
   const safeKitName = escapeHtml(kit.name);
@@ -188,6 +224,9 @@ function displayResults({ primaryScenario, upgradeScenario, selectedSpace, recom
   const selectionNote = selectedSpace.id && recommendedSpace.id && selectedSpace.id !== recommendedSpace.id
     ? `<div style="font-size: 0.82rem; color: var(--text-secondary); margin-top: 8px;">This quote is using <strong>${safeSelectedSpaceName}</strong>. The model still ranks <strong>${safeRecommendedSpaceName}</strong> as the strongest sun location.</div>`
     : '';
+  const usageContextCopy = usingDefaultAnnualUsage
+    ? `No household usage was entered, so this quote is using the UK typical household default of <strong>${formatWholeNumber(annualUsageKwh)} kWh/year</strong> from ${escapeHtml(DEFAULT_ANNUAL_USAGE_SOURCE)}.`
+    : `This quote is using your estimated household electricity use of <strong>${formatWholeNumber(annualUsageKwh)} kWh/year</strong> to work out how much solar stays on-site versus spills away unused.`;
   const annualValueCopy = exportPaymentEnabled
     ? `That is worth about <strong>${formatCurrency(valueModel.annualValue)}</strong> in year one, split between
       <strong>${formatCurrency(valueModel.billSavings)}</strong> of avoided grid spend and
@@ -228,6 +267,7 @@ function displayResults({ primaryScenario, upgradeScenario, selectedSpace, recom
           <strong>${conservativeAdjusted.annualKwh}-${optimisticAdjusted.annualKwh} kWh/year</strong>.
           ${annualValueCopy}
         </p>
+        <div class="analysis-note" style="margin-bottom: 14px;">${usageContextCopy}</div>
         <div class="badge-row" style="margin: 14px 0 10px;">
           <span class="info-badge">${kit.hasBattery ? 'Battery combo selected' : 'Solar-only kit selected'}</span>
           <span class="info-badge">Confidence: ${safeConfidence}</span>
@@ -239,7 +279,7 @@ function displayResults({ primaryScenario, upgradeScenario, selectedSpace, recom
       <div class="results-hero-stat">
         <div class="results-hero-stat-label">Modelled first-year value</div>
         <div class="results-hero-stat-value">${formatCurrency(valueModel.annualValue)}</div>
-        <div class="results-hero-stat-note">${Math.round(valueModel.selfUsedKwh)} kWh used in home · ${Math.round(valueModel.exportKwh)} kWh spill</div>
+        <div class="results-hero-stat-note">${Math.round(valueModel.selfUsedKwh)} kWh used in home · ${Math.round(valueModel.exportKwh)} kWh spill · ${formatWholeNumber(annualUsageKwh)} kWh/year household use</div>
       </div>
     </div>
   `;
@@ -297,8 +337,10 @@ function displayResults({ primaryScenario, upgradeScenario, selectedSpace, recom
   renderSavingsChart(roi);
 
   document.getElementById('price-disclaimer').textContent = exportPaymentEnabled
-    ? `Based on ${config.electricityPriceSource}: ${config.electricityPrice}${config.electricityPriceUnit}, plus ${config.exportTariff}${config.exportTariffUnit} from ${config.exportTariffSource}. The storage comparison assumes ${Math.round(config.solarSelfUseRatio * 100)}% direct self-use without a battery and ${Math.round(config.batteryRoundTripEfficiency * 100)}% round-trip storage efficiency.`
-    : `Based on ${config.electricityPriceSource}: ${config.electricityPrice}${config.electricityPriceUnit}. This plug-in solar quote assumes excess electricity sent to the grid is unpaid. The storage comparison assumes ${Math.round(config.solarSelfUseRatio * 100)}% direct self-use without a battery and ${Math.round(config.batteryRoundTripEfficiency * 100)}% round-trip storage efficiency.`;
+    ? `Based on ${config.electricityPriceSource}: ${config.electricityPrice}${config.electricityPriceUnit}, plus ${config.exportTariff}${config.exportTariffUnit} from ${config.exportTariffSource}. Household usage is set to ${formatWholeNumber(annualUsageKwh)} kWh/year${usingDefaultAnnualUsage ? ` using the UK typical default from ${DEFAULT_ANNUAL_USAGE_SOURCE}` : ''}. The storage comparison assumes ${Math.round(config.solarSelfUseRatio * 100)}% direct self-use without a battery and ${Math.round(config.batteryRoundTripEfficiency * 100)}% round-trip storage efficiency.`
+    : `Based on ${config.electricityPriceSource}: ${config.electricityPrice}${config.electricityPriceUnit}. Household usage is set to ${formatWholeNumber(annualUsageKwh)} kWh/year${usingDefaultAnnualUsage ? ` using the UK typical default from ${DEFAULT_ANNUAL_USAGE_SOURCE}` : ''}. This plug-in solar quote assumes excess electricity sent to the grid is unpaid. The storage comparison assumes ${Math.round(config.solarSelfUseRatio * 100)}% direct self-use without a battery and ${Math.round(config.batteryRoundTripEfficiency * 100)}% round-trip storage efficiency.`;
+
+  updateUsageAssumptionUi();
 }
 
 function renderBatteryUpgrade(primaryScenario, upgradeScenario) {
@@ -544,22 +586,32 @@ function renderSavingsChart(roi) {
   charts.push(chart);
 }
 
-function estimateEnergyValue(annualKwh, kit) {
+function estimateEnergyValue(annualKwh, kit, annualUsageKwh) {
   const electricityRate = config.electricityPrice / 100;
   const exportRate = (config.exportTariff ?? 0) / 100;
   const directSelfUseRatio = clamp(config.solarSelfUseRatio ?? 0.42, 0, 1);
-  const directSelfUseKwh = annualKwh * directSelfUseRatio;
+  const householdDemandKwh = Math.max(0, annualUsageKwh || 0);
+  const maxDirectSelfUseKwh = annualKwh * directSelfUseRatio;
+  const directSelfUseKwh = Math.min(householdDemandKwh, maxDirectSelfUseKwh);
 
   let shiftedKwh = 0;
   let batteryLossKwh = 0;
+  let rawShiftedKwh = 0;
   let exportKwh = annualKwh - directSelfUseKwh;
 
   if (kit.hasBattery) {
     const referenceBatteryWh = config.referenceBatteryCapacityWh ?? 2000;
     const batterySizeFactor = clamp((kit.batteryCapacityWh || referenceBatteryWh) / referenceBatteryWh, 0.65, 1.2);
     const rawShiftRatio = clamp((config.batteryShiftableShare ?? 0.38) * batterySizeFactor, 0, 1 - directSelfUseRatio);
-    const rawShiftedKwh = annualKwh * rawShiftRatio;
-    shiftedKwh = rawShiftedKwh * (config.batteryRoundTripEfficiency ?? 0.9);
+    const roundTripEfficiency = config.batteryRoundTripEfficiency ?? 0.9;
+    const remainingDemandKwh = Math.max(0, householdDemandKwh - directSelfUseKwh);
+    const maxRawShiftedKwh = annualKwh * rawShiftRatio;
+    const maxDeliveredShiftedKwh = maxRawShiftedKwh * roundTripEfficiency;
+
+    shiftedKwh = Math.min(remainingDemandKwh, maxDeliveredShiftedKwh);
+    rawShiftedKwh = roundTripEfficiency > 0
+      ? Math.min(maxRawShiftedKwh, shiftedKwh / roundTripEfficiency)
+      : 0;
     exportKwh = Math.max(0, annualKwh - directSelfUseKwh - rawShiftedKwh);
     batteryLossKwh = Math.max(0, rawShiftedKwh - shiftedKwh);
   }
@@ -580,6 +632,97 @@ function estimateEnergyValue(annualKwh, kit) {
     selfUseRatio: annualKwh > 0 ? selfUsedKwh / annualKwh : 0,
     effectiveValuePerKwh: annualKwh > 0 ? annualValue / annualKwh : 0,
   };
+}
+
+function initUsageControls() {
+  document.getElementById('btn-apply-usage')?.addEventListener('click', () => {
+    applyAnnualUsageInput();
+  });
+
+  document.getElementById('btn-use-average-usage')?.addEventListener('click', () => {
+    const input = document.getElementById('annual-usage-input');
+    if (input) {
+      input.value = '';
+      input.setCustomValidity('');
+    }
+
+    setState({ annualUsageKwh: null, results: null });
+    updateUsageAssumptionUi();
+    resetResultsForRecalculation();
+    calculateResults();
+  });
+
+  document.getElementById('annual-usage-input')?.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      applyAnnualUsageInput();
+    }
+  });
+}
+
+function applyAnnualUsageInput() {
+  const input = document.getElementById('annual-usage-input');
+  if (!input) return;
+
+  const rawValue = input.value.trim();
+  if (!rawValue) {
+    input.setCustomValidity('');
+    setState({ annualUsageKwh: null, results: null });
+    updateUsageAssumptionUi();
+    resetResultsForRecalculation();
+    calculateResults();
+    return;
+  }
+
+  const annualUsageKwh = Number(rawValue);
+  if (!Number.isFinite(annualUsageKwh) || annualUsageKwh < 100 || annualUsageKwh > 100000) {
+    input.setCustomValidity('Enter a yearly electricity use between 100 and 100,000 kWh, or leave it blank to use the UK average.');
+    input.reportValidity();
+    return;
+  }
+
+  input.setCustomValidity('');
+  setState({ annualUsageKwh: Math.round(annualUsageKwh), results: null });
+  updateUsageAssumptionUi();
+  resetResultsForRecalculation();
+  calculateResults();
+}
+
+function updateUsageAssumptionUi() {
+  const annualUsageInput = getAnnualUsageInput();
+  const resolvedAnnualUsage = getResolvedAnnualUsageKwh();
+  const usingDefaultAnnualUsage = isUsingDefaultAnnualUsage();
+
+  const pill = document.getElementById('annual-usage-pill');
+  if (pill) {
+    pill.textContent = usingDefaultAnnualUsage ? 'UK average active' : 'Custom value active';
+  }
+
+  const input = document.getElementById('annual-usage-input');
+  if (input && document.activeElement !== input) {
+    input.value = annualUsageInput ?? '';
+  }
+
+  const helper = document.getElementById('annual-usage-helper');
+  if (helper) {
+    helper.textContent = getAnnualUsageHelperText(usingDefaultAnnualUsage, resolvedAnnualUsage);
+  }
+
+  const source = document.getElementById('annual-usage-source');
+  if (source) {
+    source.textContent = usingDefaultAnnualUsage ? DEFAULT_ANNUAL_USAGE_SOURCE : 'Using your household estimate';
+  }
+
+  const effective = document.getElementById('annual-usage-effective');
+  if (effective) {
+    effective.textContent = `${formatWholeNumber(resolvedAnnualUsage)} kWh/year`;
+  }
+}
+
+function getAnnualUsageHelperText(usingDefaultAnnualUsage, annualUsageKwh) {
+  return usingDefaultAnnualUsage
+    ? `Leave this blank to keep the UK typical household default of ${formatWholeNumber(DEFAULT_ANNUAL_USAGE_KWH)} kWh/year. Higher home use usually means more of the solar stays valuable on-site.`
+    : `The quote is currently using ${formatWholeNumber(annualUsageKwh)} kWh/year to split generation between home use and spill. Clear the field or use the UK average button if you do not know your number yet.`;
 }
 
 function getBatteryUpgradeKit(selectedKit) {
@@ -657,6 +800,10 @@ function round1(value) {
 
 function roundCurrency(value) {
   return Math.round(value * 100) / 100;
+}
+
+function formatWholeNumber(value) {
+  return Math.round(value || 0).toLocaleString('en-GB');
 }
 
 function hasExportPayment() {

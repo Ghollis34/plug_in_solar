@@ -47,6 +47,8 @@ export function normalizeStateValue(key, value) {
       return normalizeObstacles(value);
     case 'sunAnalysis':
       return normalizeSunAnalysis(value);
+    case 'annualUsageKwh':
+      return normalizeAnnualUsageKwh(value);
     case 'selectedKit':
       return normalizeSelectedKit(value);
     case 'results':
@@ -310,6 +312,11 @@ export function normalizeAnalysisScore(score) {
 export function normalizeSelectedKit(value) {
   const id = normalizeId(value?.id);
   return id ? { id } : null;
+}
+
+export function normalizeAnnualUsageKwh(value) {
+  if (value == null || value === '') return null;
+  return clampNumber(value, 100, 100000);
 }
 
 export function normalizeResults(value) {

@@ -3,6 +3,8 @@
   "electricityPriceUnit": "p/kWh",
   "electricityPriceSource": "Ofgem price cap Q2 2026",
   "electricityPriceUpdated": "2026-04-01",
+  "defaultAnnualElectricityUsageKwh": 2700,
+  "defaultAnnualElectricityUsageSource": "Ofgem typical medium household electricity use",
   "exportTariff": 0,
   "exportTariffUnit": "p/kWh",
   "exportTariffSource": "Plug-in solar quote assumption: no current export payment",

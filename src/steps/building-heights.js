@@ -1,10 +1,11 @@
-import { getState, setState } from '../utils/state.js';
+import { setState } from '../utils/state.js';
 import { degreesToCompass, latLngToMeters, metersToLatLng, normalizeDegrees } from '../utils/geometry.js';
 import { FRONT_DOOR_OPTIONS, OBSTACLE_TOOLS, SHED_DIRECTION_OPTIONS } from '../utils/site-config.js';
-import { loadMapRuntime } from '../utils/map-runtime.js';
+import { createMapStepSession } from '../utils/map-step-session.js';
 import { renderObstacleList } from '../utils/obstacle-list.js';
 import { getSelectedObstacleLabel, moveObstacleById, rotateShedById } from '../utils/site-obstacle-state.js';
 import { getShedRotationValue, setShedRotationValue, syncShedRotationUI } from '../utils/shed-rotation.js';
+import { getLocationState, getObstaclesState, getPrimaryBuilding } from '../utils/site-state.js';
 
 let map = null;
 let mapLoaded = false;
@@ -18,13 +19,9 @@ let selectedObstacleId = null;
 let activeObstacleTool = 'fence';
 let pendingPlacement = null;
 let fenceStartPoint = null;
-let mapInitToken = 0;
-let captureBuildingAtLocation = null;
-let captureNearbyBuildings = null;
-let createStepMap = null;
-let drawBuildingFootprintPreview = null;
-let drawObstacles = null;
-let normalizeObstacles = null;
+let mapRuntime = null;
+
+const mapSession = createMapStepSession();
 
 const DEFAULT_WIDTH_M = 5;
 const DEFAULT_DEPTH_M = 9;
@@ -32,10 +29,10 @@ const DEFAULT_HEIGHT_M = 7.2;
 const NUDGE_STEP_M = 1.5;
 const OBSTACLE_NUDGE_STEP_M = 0.5;
 export function render() {
-  const building = (getState('buildings') || [])[0] || {};
+  const building = getPrimaryBuilding() || {};
   const facing = building.frontDoorFacing;
   const facingValue = facing ?? 180;
-  const obstacleCount = (getState('obstacles') || []).length;
+  const obstacleCount = getObstaclesState().length;
 
   return `
     <div class="step-page step-page-map">
@@ -277,7 +274,7 @@ export function render() {
 }
 
 export function init() {
-  const location = getState('location');
+  const location = getLocationState();
   if (!location) return;
 
   document.getElementById('btn-back-buildings')?.addEventListener('click', () => {
@@ -289,28 +286,34 @@ export function init() {
     window.dispatchEvent(new CustomEvent('wizard:next'));
   });
 
-  const token = ++mapInitToken;
+  const token = mapSession.beginRun();
   showSiteMapLoading('Loading site map…');
 
-  ensureMapRuntime()
-    .then(() => {
-      if (token !== mapInitToken) return;
+  mapSession.ensureRuntime(token)
+    .then((runtime) => {
+      if (!runtime) return null;
+      mapRuntime = runtime;
 
-      const building = (getState('buildings') || [])[0] || {};
+      const building = getPrimaryBuilding() || {};
       draftCenter = {
         lat: Number.isFinite(building.lat) ? building.lat : location.lat,
         lng: Number.isFinite(building.lng) ? building.lng : location.lng,
       };
       draftFootprint = building.footprint || null;
       draftFrontDoorFacing = Number.isFinite(building.frontDoorFacing) ? building.frontDoorFacing : null;
-      drawnObstacles = normalizeObstacles(getState('obstacles') || []);
+      drawnObstacles = mapRuntime.normalizeObstacles(getObstaclesState());
       obstacleCounter = drawnObstacles.length;
       selectedObstacleId = null;
 
       return initMap(location, token);
     })
+    .then((createdMap) => {
+      if (!createdMap || !mapSession.isCurrent(token)) return;
+      map = createdMap;
+      bindMapInteractions();
+    })
     .then(() => {
-      if (token !== mapInitToken) return;
+      if (!mapSession.isCurrent(token)) return;
       initControls();
       updateDirectionUI();
       updatePositionNote();
@@ -320,52 +323,43 @@ export function init() {
       updateSetupGuide();
     })
     .catch((error) => {
-      if (token !== mapInitToken) return;
+      if (!mapSession.isCurrent(token)) return;
       console.error('Failed to load site setup map:', error);
       showSiteMapLoading('Failed to load site map. Refresh or try again.');
     });
 }
 
-function ensureMapRuntime() {
-  if (createStepMap && normalizeObstacles) {
-    return Promise.resolve();
-  }
-
-  return loadMapRuntime().then((runtime) => {
-    captureBuildingAtLocation = runtime.captureBuildingAtLocation;
-    captureNearbyBuildings = runtime.captureNearbyBuildings;
-    createStepMap = runtime.createStepMap;
-    drawBuildingFootprintPreview = runtime.drawBuildingFootprintPreview;
-    drawObstacles = runtime.drawObstacles;
-    normalizeObstacles = runtime.normalizeObstacles;
-  });
-}
-
 function initMap(location, token) {
   const initialCenter = draftCenter || location;
-  return new Promise((resolve) => {
-    map = createStepMap({
-      container: 'buildings-map',
-      center: [initialCenter.lng, initialCenter.lat],
-      zoom: 18.2,
-      pitch: 56,
-      bearing: -18,
-      onLoad: () => {
-        mapLoaded = true;
-        refreshObstaclesAfterSettledPaint();
+  return mapSession.createMap(token, {
+    container: 'buildings-map',
+    center: [initialCenter.lng, initialCenter.lat],
+    zoom: 18.2,
+    pitch: 56,
+    bearing: -18,
+    onLoad: (mapInstance) => {
+      map = mapInstance;
+      mapLoaded = true;
+      refreshObstaclesAfterSettledPaint();
+
+      return new Promise((resolve) => {
         map.once('idle', () => {
           focusMapOnDetectedBuilding(location);
-          if (token === mapInitToken) {
+          if (mapSession.isCurrent(token)) {
             hideSiteMapLoading();
           }
           resolve();
         });
-      },
-    });
+      });
+    },
+  });
+}
 
-    map.on('click', (event) => {
-      handleMapClick(event.lngLat.lat, event.lngLat.lng);
-    });
+function bindMapInteractions() {
+  if (!map) return;
+
+  map.on('click', (event) => {
+    handleMapClick(event.lngLat.lat, event.lngLat.lng);
   });
 }
 
@@ -443,7 +437,7 @@ function setFrontDoorFacing(value) {
 }
 
 function nudgeBuilding(direction) {
-  const location = getState('location');
+  const location = getLocationState();
   if (!location || !draftCenter) return;
 
   if (direction === 'reset') {
@@ -497,7 +491,7 @@ function updateDirectionUI() {
 }
 
 function updatePositionNote() {
-  const location = getState('location');
+  const location = getLocationState();
   const noteEl = document.getElementById('position-note');
   if (!location || !noteEl || !draftCenter) return;
 
@@ -518,9 +512,9 @@ function updatePositionNote() {
 }
 
 function updateDirectionPreview() {
-  if (!map || !mapLoaded || !map.isStyleLoaded() || !draftCenter) return;
+  if (!map || !mapLoaded || !draftCenter) return;
 
-  drawBuildingFootprintPreview(map, {
+  mapRuntime.drawBuildingFootprintPreview(map, {
     lat: draftCenter.lat,
     lng: draftCenter.lng,
     widthM: DEFAULT_WIDTH_M,
@@ -533,7 +527,7 @@ function updateDirectionPreview() {
 function focusMapOnDetectedBuilding(location) {
   if (!map || !draftCenter) return;
 
-  const detectedBuilding = captureBuildingAtLocation(map, draftCenter, { searchRadiusM: 32 });
+  const detectedBuilding = mapRuntime.captureBuildingAtLocation(map, draftCenter, { searchRadiusM: 32 });
   const targetCenter = detectedBuilding
     ? { lat: detectedBuilding.lat, lng: detectedBuilding.lng }
     : draftCenter;
@@ -604,8 +598,8 @@ function focusMapOnDetectedBuilding(location) {
 function captureNeighborBuildings() {
   if (!map || !draftCenter) return;
 
-  const detectedBuilding = captureBuildingAtLocation(map, draftCenter, { searchRadiusM: 28 });
-  nearbyBuildings = captureNearbyBuildings(map, draftCenter, {
+  const detectedBuilding = mapRuntime.captureBuildingAtLocation(map, draftCenter, { searchRadiusM: 28 });
+  nearbyBuildings = mapRuntime.captureNearbyBuildings(map, draftCenter, {
     radiusM: 100,
     excludeContainingCenter: !detectedBuilding?.footprint?.length,
     excludeFootprint: detectedBuilding?.footprint?.length
@@ -764,9 +758,7 @@ function addShed(lat, lng) {
 }
 
 function refreshObstacles() {
-  if (map?.isStyleLoaded()) {
-    drawObstacles(map, drawnObstacles);
-  }
+  return mapRuntime.drawObstacles(map, drawnObstacles);
 }
 
 function refreshObstaclesDeferred() {
@@ -1008,10 +1000,10 @@ function getFootprintBounds(footprint) {
 }
 
 function saveBuilding() {
-  const previousBuilding = (getState('buildings') || [])[0] || {};
-  const detectedBuilding = map ? captureBuildingAtLocation(map, draftCenter, { searchRadiusM: 28 }) : null;
+  const previousBuilding = getPrimaryBuilding() || {};
+  const detectedBuilding = map ? mapRuntime.captureBuildingAtLocation(map, draftCenter, { searchRadiusM: 28 }) : null;
   const refreshedNearbyBuildings = map
-    ? captureNearbyBuildings(map, draftCenter, {
+    ? mapRuntime.captureNearbyBuildings(map, draftCenter, {
       radiusM: 100,
       excludeContainingCenter: !detectedBuilding?.footprint?.length,
       excludeFootprint: detectedBuilding?.footprint?.length
@@ -1055,14 +1047,11 @@ function hideSiteMapLoading() {
 }
 
 export function cleanup() {
-  mapInitToken += 1;
   document.removeEventListener('keydown', handleEscapeKey);
   document.body.classList.remove('map-placement-banner-active');
 
-  if (map) {
-    map.remove();
-    map = null;
-  }
+  mapSession.destroy();
+  map = null;
 
   mapLoaded = false;
   draftCenter = null;

@@ -1,13 +1,23 @@
-import { getState, setState } from '../utils/state.js';
+import { setState } from '../utils/state.js';
 import { degreesToCompass, getBearingBetweenPoints, getRectangleRing, latLngToMeters, metersToLatLng, normalizeDegrees } from '../utils/geometry.js';
 import { getMapLightFromSun, samplePlacementHeatmap } from '../utils/sun.js';
 import { escapeHtml } from '../utils/security.js';
 import { getSpaceTypeInfo, OBSTACLE_TOOLS, SPACE_TYPES } from '../utils/site-config.js';
-import { loadMapRuntime } from '../utils/map-runtime.js';
+import { createMapStepSession } from '../utils/map-step-session.js';
 import { renderObstacleList } from '../utils/obstacle-list.js';
 import { rotateShedById } from '../utils/site-obstacle-state.js';
 import { getShedRotationValue, setShedRotationValue, syncShedRotationUI } from '../utils/shed-rotation.js';
 import { getAnnualSolarRecommendation } from '../utils/solar-placement.js';
+import {
+  getBuildingsState,
+  getLocationState,
+  getObstaclesState,
+  getPrimaryBuilding,
+  getPrimaryBuildingCentroid,
+  getPrimaryBuildingFootprint,
+  getSelectedSpaceIdState,
+  getSpacesState,
+} from '../utils/site-state.js';
 
 let map = null;
 let activeMode = 'space';
@@ -26,16 +36,9 @@ let heatmapRefineHandle = null;
 let heatmapRefineIdleHandle = null;
 let heatmapRenderNonce = 0;
 let initialSceneReady = false;
-let mapInitToken = 0;
-let maplibregl = null;
-let createPanelMarkerElement = null;
-let createStepMap = null;
-let drawBuildingFootprintPreview = null;
-let drawObstacles = null;
-let drawSuitabilityHeatmap = null;
-let normalizeObstacles = null;
-let updatePanelMarkerElement = null;
-let getShadeModelBuildings = null;
+let mapRuntime = null;
+
+const mapSession = createMapStepSession();
 
 const SURFACE_SNAP_DISTANCE_M = 6;
 const WALL_SNAP_DISTANCE_M = 5;
@@ -45,7 +48,7 @@ const HEATMAP_PRIMARY_STEP_M = 2.5;
 const HEATMAP_REFINED_STEP_M = 2.0;
 
 export function render() {
-  const obstacleCount = (getState('obstacles') || []).length;
+  const obstacleCount = getObstaclesState().length;
 
   return `
     <div class="step-page step-page-map">
@@ -186,7 +189,7 @@ export function render() {
 }
 
 export function init() {
-  const location = getState('location');
+  const location = getLocationState();
   if (!location) return;
 
   document.getElementById('btn-back-spaces')?.addEventListener('click', () => {
@@ -202,16 +205,17 @@ export function init() {
     window.dispatchEvent(new CustomEvent('wizard:next'));
   });
 
-  const token = ++mapInitToken;
+  const token = mapSession.beginRun();
   showPlacementMapLoading('Loading placement map…');
 
-  ensureMapRuntime()
-    .then(() => {
-      if (token !== mapInitToken) return;
+  mapSession.ensureRuntime(token)
+    .then((runtime) => {
+      if (!runtime) return null;
+      mapRuntime = runtime;
 
-      drawnSpaces = [...(getState('spaces') || [])];
-      drawnObstacles = normalizeObstacles(getState('obstacles') || []);
-      selectedSpaceId = getState('selectedSpaceId') || drawnSpaces[0]?.id || null;
+      drawnSpaces = [...getSpacesState()];
+      drawnObstacles = mapRuntime.normalizeObstacles(getObstaclesState());
+      selectedSpaceId = getSelectedSpaceIdState() || drawnSpaces[0]?.id || null;
       spaceCounter = drawnSpaces.length;
       obstacleCounter = drawnObstacles.length;
       initialSceneReady = false;
@@ -224,51 +228,39 @@ export function init() {
       updatePlacementGuide();
       return initMap(location, token);
     })
+    .then((createdMap) => {
+      if (!createdMap || !mapSession.isCurrent(token)) return;
+      map = createdMap;
+      bindMapInteractions();
+    })
     .catch((error) => {
-      if (token !== mapInitToken) return;
+      if (!mapSession.isCurrent(token)) return;
       console.error('Failed to load placement map:', error);
       showPlacementMapLoading('Failed to load placement map. Refresh or try again.');
     });
 }
 
-function ensureMapRuntime() {
-  if (maplibregl && createStepMap && normalizeObstacles && getShadeModelBuildings) {
-    return Promise.resolve();
-  }
-
-  return loadMapRuntime().then((runtime) => {
-    maplibregl = runtime.maplibregl;
-    createPanelMarkerElement = runtime.createPanelMarkerElement;
-    createStepMap = runtime.createStepMap;
-    drawBuildingFootprintPreview = runtime.drawBuildingFootprintPreview;
-    drawObstacles = runtime.drawObstacles;
-    drawSuitabilityHeatmap = runtime.drawSuitabilityHeatmap;
-    normalizeObstacles = runtime.normalizeObstacles;
-    updatePanelMarkerElement = runtime.updatePanelMarkerElement;
-    getShadeModelBuildings = runtime.getShadeModelBuildings;
-  });
-}
-
 function initMap(location, token) {
   const mapCenter = getPlacementCenter(location);
-  return new Promise((resolve) => {
-    map = createStepMap({
-      container: 'spaces-map',
-      center: [mapCenter.lng, mapCenter.lat],
-      zoom: 18.6,
-      pitch: 55,
-      bearing: -24,
-      onLoad: () => {
-        if (token !== mapInitToken) {
-          resolve();
-          return;
-        }
+  return mapSession.createMap(token, {
+    container: 'spaces-map',
+    center: [mapCenter.lng, mapCenter.lat],
+    zoom: 18.6,
+    pitch: 55,
+    bearing: -24,
+    onLoad: (mapInstance) => {
+      map = mapInstance;
+      if (!mapSession.isCurrent(token)) {
+        return;
+      }
 
-        showPlacementMapLoading('Positioning map…');
-        drawHousePreview();
-        refreshObstaclesAfterSettledPaint();
-        drawnSpaces.forEach((space) => addMarkerToMap(space));
-        applyPlacementSceneLighting();
+      showPlacementMapLoading('Positioning map…');
+      drawHousePreview();
+      refreshObstaclesAfterSettledPaint();
+      drawnSpaces.forEach((space) => addMarkerToMap(space));
+      applyPlacementSceneLighting();
+
+      return new Promise((resolve) => {
         fitMapToPlacementSite(() => {
           showPlacementMapLoading('Loading site objects…');
           applyPlacementSceneLighting();
@@ -282,16 +274,20 @@ function initMap(location, token) {
           });
           resolve();
         });
-      },
-    });
+      });
+    },
+  });
+}
 
-    map.on('click', (e) => {
-      handleMapClick(e.lngLat.lat, e.lngLat.lng);
-    });
+function bindMapInteractions() {
+  if (!map) return;
 
-    map.on('rotate', () => {
-      refreshPanelMarkers();
-    });
+  map.on('click', (e) => {
+    handleMapClick(e.lngLat.lat, e.lngLat.lng);
+  });
+
+  map.on('rotate', () => {
+    refreshPanelMarkers();
   });
 }
 
@@ -515,21 +511,21 @@ function addShed(lat, lng) {
 }
 
 function addMarkerToMap(space) {
-  const el = createPanelMarkerElement(space, {
+  const el = mapRuntime.createPanelMarkerElement(space, {
     onClick: (event) => {
       event.stopPropagation();
       selectSpace(space.id);
     },
   });
 
-  const marker = new maplibregl.Marker({
+  const marker = new mapRuntime.maplibregl.Marker({
     element: el,
     anchor: 'center',
     pitchAlignment: 'map',
     rotationAlignment: 'map',
   })
     .setLngLat([space.centerLng, space.centerLat])
-    .setPopup(new maplibregl.Popup({ offset: 25 }).setDOMContent(createSpacePopupContent(space)))
+    .setPopup(new mapRuntime.maplibregl.Popup({ offset: 25 }).setDOMContent(createSpacePopupContent(space)))
     .addTo(map);
 
   markers.push({ id: space.id, marker, element: el });
@@ -552,10 +548,7 @@ function createSpacePopupContent(space) {
 }
 
 function refreshObstacles() {
-  if (!hasPlacementMapStyle()) return false;
-
-  drawObstacles(map, drawnObstacles);
-  return true;
+  return mapRuntime.drawObstacles(map, drawnObstacles);
 }
 
 function refreshObstaclesAfterSettledPaint(onDone) {
@@ -599,7 +592,6 @@ function refreshObstaclesDeferred(onDone) {
 }
 
 function renderPlacementScene(options = {}) {
-  if (!hasPlacementMapStyle()) return;
   refreshObstacles();
   queueHeatmapRefresh(options);
 }
@@ -617,7 +609,7 @@ function queueHeatmapRefresh(options = {}) {
       heatmapRefreshHandle = null;
 
       try {
-        if (!hasPlacementMapStyle()) {
+        if (!mapRuntime.hasUsableMapStyle(map)) {
           hidePlacementMapLoading();
           setHeatmapStatus('Suitability surface unavailable.');
           return;
@@ -630,7 +622,7 @@ function queueHeatmapRefresh(options = {}) {
           stepM: options.stepM ?? HEATMAP_PRIMARY_STEP_M,
           fastMode: options.fastMode === true,
         });
-        drawSuitabilityHeatmap(map, featureCollection);
+        mapRuntime.drawSuitabilityHeatmap(map, featureCollection);
         refreshObstacles();
         initialSceneReady = true;
         setHeatmapStatus('Suitability surface ready.');
@@ -664,7 +656,7 @@ function scheduleHeatmapRefinement(renderNonce) {
     heatmapRefineHandle = null;
     heatmapRefineIdleHandle = null;
 
-    if (renderNonce !== heatmapRenderNonce || !hasPlacementMapStyle()) {
+    if (renderNonce !== heatmapRenderNonce || !mapRuntime.hasUsableMapStyle(map)) {
       return;
     }
 
@@ -682,11 +674,11 @@ function scheduleHeatmapRefinement(renderNonce) {
         fastMode: true,
       });
 
-      if (renderNonce !== heatmapRenderNonce || !hasPlacementMapStyle()) {
+      if (renderNonce !== heatmapRenderNonce || !mapRuntime.hasUsableMapStyle(map)) {
         return;
       }
 
-      drawSuitabilityHeatmap(map, featureCollection);
+      mapRuntime.drawSuitabilityHeatmap(map, featureCollection);
       refreshObstacles();
       refreshPanelMarkers();
     } catch (error) {
@@ -717,7 +709,7 @@ function refreshPanelMarkers() {
   markers.forEach((entry) => {
     const isSelected = entry.id === selectedSpaceId;
     const space = drawnSpaces.find((item) => item.id === entry.id) || { id: entry.id };
-    updatePanelMarkerElement(entry.element, space, {
+    mapRuntime.updatePanelMarkerElement(entry.element, space, {
       selected: isSelected,
       rotation: getMarkerScreenRotation(space),
     });
@@ -891,7 +883,7 @@ function updatePlacementRecommendations(typeId) {
 }
 
 function getPlacementRecommendation() {
-  return getAnnualSolarRecommendation(getState('location')?.lat);
+  return getAnnualSolarRecommendation(getLocationState()?.lat);
 }
 
 function applyPlacementRecommendationControls(recommendation) {
@@ -1017,12 +1009,12 @@ function getNearestFenceAlignment(lat, lng) {
 
 function drawHousePreview() {
   const userBuilding = getPrimaryBuilding();
-  if (!hasPlacementMapStyle() || !userBuilding) return;
-  drawBuildingFootprintPreview(map, userBuilding);
+  if (!userBuilding) return;
+  mapRuntime.drawBuildingFootprintPreview(map, userBuilding);
 }
 
 function fitMapToPlacementSite(onComplete) {
-  if (!hasPlacementMapStyle()) {
+  if (!mapRuntime.hasUsableMapStyle(map)) {
     onComplete?.();
     return;
   }
@@ -1072,8 +1064,8 @@ function fitMapToPlacementSite(onComplete) {
 }
 
 function applyPlacementSceneLighting() {
-  const location = getState('location');
-  if (!hasPlacementMapStyle() || !location) return;
+  const location = getLocationState();
+  if (!mapRuntime.hasUsableMapStyle(map) || !location) return;
 
   const center = getHeatmapCenter();
   const lightTime = new Date();
@@ -1112,17 +1104,17 @@ function getHeatmapCenter() {
   const center = map?.getCenter();
   return center
     ? { lat: center.lat, lng: center.lng }
-    : getPlacementCenter(getState('location'));
+    : getPlacementCenter(getLocationState());
 }
 
 function getPlacementHeatmapBuildings(center) {
-  const buildings = getState('buildings') || [];
+  const buildings = getBuildingsState();
 
-  if (!map || typeof getShadeModelBuildings !== 'function') {
+  if (!map || typeof mapRuntime?.getShadeModelBuildings !== 'function') {
     return buildings;
   }
 
-  return getShadeModelBuildings(map, buildings, {
+  return mapRuntime.getShadeModelBuildings(map, buildings, {
     center,
     radiusM: 120,
   });
@@ -1190,15 +1182,6 @@ function getMarkerScreenRotation(space) {
   return normalizeDegrees(worldRotation - (map?.getBearing() || 0));
 }
 
-function hasPlacementMapStyle() {
-  if (!map || typeof map.getStyle !== 'function') {
-    return false;
-  }
-
-  const style = map.getStyle();
-  return Array.isArray(style?.layers) && style.layers.length > 0;
-}
-
 function cancelScheduledHeatmapRefresh() {
   if (heatmapRefreshHandle) {
     window.clearTimeout(heatmapRefreshHandle);
@@ -1242,45 +1225,6 @@ function showPlacementMapLoading(message) {
 
 function hidePlacementMapLoading() {
   document.getElementById('placement-map-loading')?.classList.add('hidden');
-}
-
-function getPrimaryBuilding() {
-  return (getState('buildings') || []).find((building) => building.kind === 'user' || building.id === 'user-building') || null;
-}
-
-function getPrimaryBuildingFootprint() {
-  const building = getPrimaryBuilding();
-  if (!building) return [];
-
-  if (building.footprint?.length >= 3) {
-    return building.footprint;
-  }
-
-  if (Number.isFinite(building.lat) && Number.isFinite(building.lng) && Number.isFinite(building.frontDoorFacing)) {
-    return getRectangleRing(
-      building.lat,
-      building.lng,
-      building.widthM || 5,
-      building.depthM || 9,
-      building.frontDoorFacing
-    ).slice(0, -1);
-  }
-
-  return [];
-}
-
-function getPrimaryBuildingCentroid() {
-  const footprint = getPrimaryBuildingFootprint();
-  if (footprint.length >= 3) {
-    return getPointCentroid(footprint);
-  }
-
-  const building = getPrimaryBuilding();
-  if (Number.isFinite(building?.lat) && Number.isFinite(building?.lng)) {
-    return { lat: building.lat, lng: building.lng };
-  }
-
-  return null;
 }
 
 function resolveSurfaceAlignment(typeId, lat, lng) {
@@ -1416,18 +1360,6 @@ function dotBearing(bearing, vector) {
   return (axis.dx * vector.dx) + (axis.dy * vector.dy);
 }
 
-function getPointCentroid(points) {
-  const total = points.reduce((acc, point) => ({
-    lat: acc.lat + point.lat,
-    lng: acc.lng + point.lng,
-  }), { lat: 0, lng: 0 });
-
-  return {
-    lat: total.lat / points.length,
-    lng: total.lng / points.length,
-  };
-}
-
 function getEffectiveSelectedSpaceId() {
   return selectedSpaceId && drawnSpaces.some((space) => space.id === selectedSpaceId)
     ? selectedSpaceId
@@ -1435,17 +1367,14 @@ function getEffectiveSelectedSpaceId() {
 }
 
 export function cleanup() {
-  mapInitToken += 1;
   heatmapRenderNonce += 1;
   cancelScheduledHeatmapRefresh();
   document.body.classList.remove('map-placement-banner-active');
 
   document.removeEventListener('keydown', handleEscapeKey);
 
-  if (map) {
-    map.remove();
-    map = null;
-  }
+  mapSession.destroy();
+  map = null;
 
   markers = [];
   pendingPlacement = null;
