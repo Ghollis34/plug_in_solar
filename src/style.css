@@ -741,17 +741,27 @@ h4 { font-size: 1.25rem; }
   font-size: 0.9rem;
   padding: 10px 20px;
   border-radius: var(--radius-lg);
-  z-index: 15;
+  z-index: 22;
   display: flex;
   align-items: center;
   gap: 12px;
   box-shadow: var(--shadow-lg);
   pointer-events: auto;
   animation: fadeSlideIn 0.25s ease;
+  max-width: min(560px, calc(100% - 88px));
+  width: auto;
 }
 
 .map-placement-banner.hidden {
   display: none;
+}
+
+body.map-placement-banner-active .map-interaction-hint {
+  opacity: 0;
+}
+
+body.map-placement-banner-active .satellite-toggle-btn {
+  top: 72px;
 }
 
 .map-overlay-bottom {
@@ -1678,6 +1688,104 @@ h4 { font-size: 1.25rem; }
   font-size: 0.8rem;
   color: var(--text-secondary);
   line-height: 1.5;
+}
+
+.task-guide-card {
+  padding: 14px 16px;
+  margin-bottom: 14px;
+  border-radius: 20px;
+  background:
+    radial-gradient(circle at top right, rgba(255, 185, 95, 0.1), transparent 42%),
+    rgba(14, 19, 31, 0.7);
+}
+
+.task-guide-header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.task-guide-title {
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.task-guide-summary {
+  font-size: 0.83rem;
+  line-height: 1.55;
+  color: var(--text-secondary);
+}
+
+.task-guide-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.task-guide-item {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.task-guide-index {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  background: rgba(255, 185, 95, 0.14);
+  color: var(--accent);
+  font-size: 0.8rem;
+  font-weight: 800;
+}
+
+.task-guide-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.task-guide-copy strong {
+  font-size: 0.84rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.task-guide-copy span {
+  font-size: 0.76rem;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.task-guide-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.12);
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.task-guide-status.is-done {
+  background: rgba(78, 222, 163, 0.12);
+  color: var(--success);
+}
+
+.obstacle-help-card {
+  padding: 12px 14px;
+  margin-bottom: 12px;
 }
 
 .compact-row {
@@ -3130,6 +3238,29 @@ body {
   .step-page-map .step-footer .btn {
     flex: 1 1 0;
     min-width: 0;
+  }
+
+  .task-guide-item {
+    grid-template-columns: 28px minmax(0, 1fr);
+  }
+
+  .task-guide-status {
+    grid-column: 2;
+    justify-self: flex-start;
+  }
+
+  .map-placement-banner {
+    left: 16px;
+    right: 16px;
+    top: 14px;
+    transform: none;
+    max-width: none;
+    justify-content: space-between;
+    padding: 10px 14px;
+  }
+
+  body.map-placement-banner-active .satellite-toggle-btn {
+    top: 74px;
   }
 
   .map-overlay-panel-right {

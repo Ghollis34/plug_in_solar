@@ -1,234 +1,316 @@
-# Shadow Analysis Accuracy Fix + Satellite Imagery
+# Map Refactor Plan
 
-## Problem
+## Goal
 
-The current shadow analysis can overstate direct sunlight because it only applies a simplified building-shadow heuristic and ignores nearby obstacles. A spot on the north side of a building can currently rank far too well, which leads to overconfident advice and inflated generation estimates.
+Reduce regressions in the map-driven steps by refactoring the parts of the codebase that are actually drifting:
 
-### Root Causes
-1. Building self-shading is modelled as a radius, not an oriented footprint.
-2. Fences, trees, and small structures are not part of the analysis contract.
-3. Results do not explain why a space was penalised or how confident the estimate is.
-4. The current implementation duplicates map setup logic across steps, which makes satellite/overlay work likely to drift.
+- repeated map lifecycle code across steps
+- inconsistent map readiness checks
+- scene rendering that depends on step-local sequencing
+- weak type boundaries around buildings, spaces, obstacles, and map runtime helpers
 
----
-
-## Scope
-
-### 1. Shared Map Bootstrap + Satellite Toggle
-
-**Provider**: ESRI World Imagery tiles, used as a configurable raster basemap for the app prototype.
-
-Notes:
-- No API key is required for the current tile endpoint.
-- Use this behind a shared helper, not as a hard-coded production guarantee.
-- Keep attribution accurate and configurable.
-- Street view remains the default because it supports 3D buildings and lighting.
-
-#### [MODIFY] `src/utils/map-helpers.js`
-Create the shared map bootstrap used by all map steps:
-- initialise common MapLibre settings
-- add 3D buildings once
-- add satellite raster source/layer once
-- add a reusable street/satellite toggle control
-- add reusable overlay helpers for spaces, obstacles, and building footprint previews
-
-#### [MODIFY] `src/steps/location.js`
-Use shared map bootstrap and show the map-style toggle here.
-
-#### [MODIFY] `src/steps/building-heights.js`
-Use shared map bootstrap and show the map-style toggle here.
-
-#### [MODIFY] `src/steps/mark-space.js`
-Use shared map bootstrap and show the map-style toggle here.
-
-#### [MODIFY] `src/steps/shadow-analysis.js`
-Use shared map bootstrap and keep street mode as the default initial view for lighting playback.
+This plan intentionally does **not** start with a class rewrite, a global map store, or a full TypeScript migration.
 
 ---
 
-### 2. Explicit Data Model For Obstacles And Analysis
+## What We Are Taking From The Junior Feedback
 
-#### [MODIFY] `src/utils/state.js`
-Add state fields required by the new workflow:
+### Keep
 
-```js
-buildings: [
-  {
-    id: 'user-building',
-    floors: 2,
-    pitched: true,
-    height: 7.7,
-    lat: 52.2,
-    lng: 0.1,
-    widthM: 5,
-    depthM: 9,
-    frontDoorFacing: null, // null means unknown
-  }
-],
-obstacles: [
-  { id: 'obs-1', type: 'fence', points: [{ lat, lng }, { lat, lng }], heightM: 1.8 },
-  { id: 'obs-2', type: 'tree', lat, lng, heightM: 5, canopyRadiusM: 3 },
-  { id: 'obs-3', type: 'shed', lat, lng, widthM: 3, depthM: 2, rotationDeg: 0, heightM: 2.5 },
-],
-sunAnalysis: {
-  bestSpaceId: 'space-1',
-  scores: [
-    {
-      id: 'space-1',
-      avgDailyHours: 5.2,
-      shadowFactor: 0.62,
-      conservativeFactor: 0.54,
-      optimisticFactor: 0.69,
-      confidence: 'medium',
-      relativeToBuilding: 'north',
-      warningLevel: 'high',
-      warnings: ['North of building - heavy shading expected'],
-      breakdown: { morning: 'sun', midday: 'mixed', afternoon: 'shade' },
-      obstructionSummary: { building: 44, fence: 12, tree: 6 },
-    }
-  ],
-  date: '...'
-}
-```
+1. Improve encapsulation around map lifecycle.
+2. Reduce duplication in layer/source management.
+3. Strengthen type safety around object shapes and helper contracts.
 
-Design rules:
-- `frontDoorFacing` starts as `null`, not a guessed default.
-- Every obstacle needs a stable `id`.
-- Rectangular obstacles need rotation if they are rendered or analysed as rectangles.
+### Defer Or Reject For Now
+
+1. **No `MapController` / `MapManager` class as the first step**
+   - The current problem is duplicated lifecycle and render sequencing, not the absence of a class.
+   - A shared helper/session abstraction is a smaller and safer extraction.
+
+2. **No Zustand / Redux map store**
+   - Persistent wizard state already lives in [src/utils/state.js](src/utils/state.js).
+   - The fragile state is transient runtime state such as timers, markers, render nonces, and active map instances. Moving that into a global store would increase coupling.
+
+3. **No custom event bus / provider pattern yet**
+   - Direct map access is already limited to the map steps and helpers.
+   - Another abstraction layer would make debugging render-order bugs harder before lifecycle is cleaned up.
+
+4. **No full TypeScript migration in phase 1**
+   - TypeScript is useful here, but it should follow boundary cleanup so we do not just type duplicated logic.
 
 ---
 
-### 3. Building Orientation Without Full Outline Drawing
+## Current Pressure Points
 
-#### [MODIFY] `src/steps/building-heights.js`
-Add a front-door direction selector:
-- 8-direction compass buttons: N, NE, E, SE, S, SW, W, NW
-- state can remain unknown until the user chooses
-- show a preview of the assumed building footprint on the map
+### 1. Step Lifecycle Is Repeated In Four Places
 
-Behaviour:
-- no hidden default of "south-facing front door"
-- if orientation is unknown, keep analysis conservative and mark confidence lower
+The same runtime loading, token cancellation, map creation, and cleanup shape exists in:
 
----
+- [src/steps/location.js](src/steps/location.js)
+- [src/steps/building-heights.js](src/steps/building-heights.js)
+- [src/steps/mark-space.js](src/steps/mark-space.js)
+- [src/steps/shadow-analysis.js](src/steps/shadow-analysis.js)
 
-### 4. Mark Spaces And Obstacles
+This is now the main regression surface.
 
-#### [MODIFY] `src/steps/mark-space.js`
-Rename to **Mark Spaces & Obstacles** and split the UI into two modes.
+### 2. Map Readiness Rules Are Inconsistent
 
-**Mode A - Panel Locations**
-- click to place candidate panel markers
-- set surface type, panel orientation, and tilt
+Recent regressions came from step-local readiness checks diverging from real MapLibre behavior. That logic should not be hand-rolled differently in each step.
 
-**Mode B - Obstacles**
-- fence tool: click two points, set height, save as line
-- tree tool: click once, set height and canopy radius
-- shed tool: click once to place a rectangular footprint, set size/height, allow rotation if kept in scope
+### 3. Scene Updates Are More Imperative Than They Need To Be
 
-Rendering:
-- fences = orange dashed line
-- trees = green circle
-- sheds = grey footprint or labelled marker
+Helpers such as obstacle, heatmap, and shadow rendering already live in [src/utils/map-helpers.js](src/utils/map-helpers.js), but step modules still have to know too much about when it is safe to call them and how often to retry.
 
-Implementation rule:
-- fences and trees are first-class MVP
-- sheds can ship as a simpler footprint if needed, but the stored schema must support later refinement
+### 4. Persistent And Runtime State Are Mixed Conceptually
+
+Persistent wizard state is centralized and reasonable. Runtime step state is local but not consistently bounded. We should improve boundaries without introducing a second app-wide state system.
 
 ---
 
-### 5. Shadow Engine Rewrite
+## Target Architecture
 
-#### [MODIFY] `src/utils/sun.js`
-Replace the current radius-based building test with footprint-aware obstruction checks.
+### Persistent App State
 
-For each analysis interval:
-1. Get sun altitude and azimuth from SunCalc.
-2. Skip intervals where the sun is below the horizon.
-3. Build shadow geometry for each obstruction.
-4. Test whether the candidate panel point falls inside any resulting shadow.
-5. Record not just shaded/unshaded, but the obstruction type responsible.
+Keep in [src/utils/state.js](src/utils/state.js):
 
-Objects:
-- user building = oriented rectangle using width/depth and front-door direction
-- fence = line segment extruded along shadow vector
-- tree = partial-shade obstacle with a lower weighting than full blockage
-- shed = small rectangle using width/depth/rotation
+- `location`
+- `buildings`
+- `obstacles`
+- `spaces`
+- `sunAnalysis`
+- `selectedKit`
+- `results`
 
-Outputs:
-- `avgDailyHours`
-- `shadowFactor`
-- conservative and optimistic factors
-- morning/midday/afternoon breakdown
-- warnings based on relative building position and obstruction dominance
-- confidence based on orientation known, obstacle coverage, and simplifications still in use
+### Transient Step Runtime State
 
-Implementation note:
-- keep geometry helpers small and pure so they can be unit-tested later
-- do not tie the engine to map rendering code
+Keep local to the active step or session:
 
----
+- active `map` instance
+- markers
+- idle handles / timeouts
+- render nonces
+- in-progress placement mode
+- current interaction-only UI state
 
-### 6. Honest Analysis UI
+### Shared Map Platform Layer
 
-#### [MODIFY] `src/steps/shadow-analysis.js`
-Show explanation, not just ranking:
-- building-relative direction for each space
-- warning badges
-- confidence level
-- morning / midday / afternoon breakdown
-- visible obstacle overlays on the map
+Consolidate in utilities:
 
-Examples:
-- high warning: `North of building - heavy shading expected`
-- medium warning: `East of building - limited afternoon sun`
-- positive signal: `South of building - strongest direct sun`
+- lazy runtime loading in [src/utils/map-runtime.js](src/utils/map-runtime.js)
+- common map bootstrap and overlay primitives in [src/utils/map-helpers.js](src/utils/map-helpers.js)
+- new shared step-session lifecycle helper
 
 ---
 
-### 7. Results Based On Real Analysis Outputs
+## Phased Refactor
 
-#### [MODIFY] `src/steps/results.js`
-Use `shadowFactor`, `conservativeFactor`, and `optimisticFactor` from analysis instead of deriving shading from `avgDailyHours / 12`.
+## Phase 1: Shared Step Map Lifecycle
 
-Add:
-- conservative and optimistic annual generation range
-- confidence summary
-- warning summary for the recommended spot
-- disclaimer about model limitations
+### Objective
+
+Remove duplicated map bootstrap and cleanup logic from the four step modules.
+
+### Deliverable
+
+Create a new helper, likely:
+
+- `src/utils/map-step-session.js`
+
+### Responsibilities
+
+- load map runtime once
+- create a step-scoped map session
+- track cancellation / invalidation token
+- expose safe `destroy()`
+- expose a shared map readiness helper
+- centralize event listener disposal for map-level listeners
+
+### Files To Update
+
+- `src/utils/map-runtime.js`
+- `src/utils/map-step-session.js` (new)
+- `src/steps/location.js`
+- `src/steps/building-heights.js`
+- `src/steps/mark-space.js`
+- `src/steps/shadow-analysis.js`
+
+### Success Criteria
+
+- each step stops manually reimplementing token/cancel/bootstrap patterns
+- step cleanup becomes small and deterministic
+- map load failures and step transitions behave consistently
 
 ---
 
-## Implementation Order
+## Phase 2: Idempotent Scene Rendering
 
-1. Shared map bootstrap and reusable basemap toggle.
-2. State/schema updates for building orientation, obstacles, and richer `sunAnalysis`.
-3. Building orientation selector and footprint preview.
-4. Space + obstacle capture flow.
-5. Shadow engine rewrite using the new schema.
-6. Honest analysis UI and results integration.
+### Objective
 
-This order is deliberate: the geometry and analysis contract must exist before the UI can present trustworthy ranges, warnings, or confidence levels.
+Make overlay rendering safe to call repeatedly without relying on step-specific retry choreography.
+
+### Deliverable
+
+Refactor rendering helpers so they update sources/layers predictably and use a single readiness rule.
+
+### Work
+
+- add a shared `hasUsableMapStyle(map)` helper
+- make building preview, obstacles, heatmap, and shadow helpers idempotent
+- prefer source data updates over remove/re-add where practical
+- isolate “ensure source/layer exists” behavior inside helpers instead of step files
+
+### Files To Update
+
+- `src/utils/map-helpers.js`
+- `src/steps/building-heights.js`
+- `src/steps/mark-space.js`
+- `src/steps/shadow-analysis.js`
+
+### Success Criteria
+
+- heatmap, obstacles, and shadow overlays render after first load without cross-step priming
+- fewer step-local fallback timers and duplicate refresh paths
+- overlay code is driven by helper contracts rather than step-specific sequencing
+
+---
+
+## Phase 3: State Boundary Cleanup
+
+### Objective
+
+Clarify what belongs in persistent wizard state versus what is purely derived or session-local.
+
+### Deliverable
+
+Add selectors and shape-focused utilities instead of introducing a new store.
+
+### Work
+
+- extract selectors for common domain reads such as:
+  - primary building
+  - building footprint
+  - effective analysis center
+  - normalized obstacle collections
+- reduce repeated `getState(...)` + fallback logic inside map steps
+- keep runtime-only values out of persistent state
+
+### Files To Update
+
+- `src/utils/state.js`
+- `src/utils/state-normalizers.js`
+- `src/utils/site-obstacle-state.js`
+- new selector/helper module if needed, for example `src/utils/site-state.js`
+- map step modules that currently inline these lookups
+
+### Success Criteria
+
+- map step files focus more on user interaction and less on data plumbing
+- building/space/obstacle access patterns become consistent across steps
+- future UI work does not need to rediscover the same state shape rules
+
+---
+
+## Phase 4: Type Safety Without Full Migration
+
+### Objective
+
+Improve safety around the highest-risk shapes before deciding whether a TypeScript migration is worth the cost.
+
+### Deliverable
+
+Introduce typed boundaries incrementally.
+
+### Work
+
+- add JSDoc typedefs for:
+  - `Building`
+  - `Obstacle`
+  - `Space`
+  - `SunAnalysisScore`
+  - map runtime helper contract
+- enable `// @ts-check` on the most fragile utility modules first if it stays low-friction
+- add tests for helper contracts that have recently regressed
+
+### Candidate Files
+
+- `src/utils/map-helpers.js`
+- `src/utils/sun.js`
+- `src/utils/state-normalizers.js`
+- `src/utils/solar-placement.js`
+
+### Success Criteria
+
+- shape mistakes are caught earlier in editing
+- helper inputs/outputs are explicit
+- we get real safety value before committing to a whole-repo TypeScript conversion
+
+---
+
+## Explicit Non-Goals For This Refactor
+
+- introducing Redux or Zustand
+- rewriting map steps into classes first
+- creating a custom event bus around the map
+- migrating the whole repo to TypeScript in one pass
+- redesigning the UX flow as part of this maintenance refactor
+
+Those may become reasonable later, but they are not the highest-leverage fixes for current instability.
+
+---
+
+## Suggested Implementation Order
+
+1. Phase 1: shared step map lifecycle
+2. Phase 2: idempotent scene rendering
+3. Phase 3: state boundary cleanup
+4. Phase 4: typed boundaries
+
+This order is deliberate:
+
+- phase 1 removes the largest duplication surface
+- phase 2 addresses the regression class we have just been fixing
+- phase 3 improves maintainability without adding global complexity
+- phase 4 adds safety after boundaries are cleaner
 
 ---
 
 ## Verification Plan
 
-### Automated / Deterministic Checks
-Add fixed geometry test cases for:
-1. panel point north of a south-facing building at midday
-2. fence casting a long winter-afternoon shadow
-3. tree partial shading reducing output less than full building blockage
-4. same point with unknown orientation yielding lower confidence than explicit orientation
+### Automated
 
-### Manual Smoke Test
-Use 9 Chelwood Road, Cambridge:
-1. switch to satellite view and verify the property context is visible
-2. set building height and front-door direction explicitly
-3. mark one point in the back garden and one in the front
-4. draw the rear fence
-5. confirm the rear point ranks materially lower and shows stronger warnings
+Add or extend tests around:
 
-### Cross-Checks
-- use PVGIS as an irradiance baseline, not as a validation source for near-field obstacle shading
-- compare major shadow expectations against aerial imagery and known building orientation
+1. map helper readiness behavior
+2. obstacle normalization and rendering inputs
+3. placement heatmap generation inputs
+4. annual solar recommendation inputs and outputs
+5. state normalization for buildings, spaces, and obstacles
+
+### Manual Smoke Checks
+
+For each map step:
+
+1. enter the step directly from the normal wizard path
+2. refresh on that step
+3. navigate away and back
+4. confirm overlays still render without needing another step to “prime” the map
+
+### Refactor Exit Criteria
+
+- placement heatmap and obstacles load correctly on first visit
+- shadow step remains stable after the shared lifecycle extraction
+- each map step has materially less lifecycle code
+- no user-visible behavior regression in location, site setup, placement, or shadows
+
+---
+
+## First Concrete Slice
+
+If work starts immediately, the first PR should only do this:
+
+1. add `map-step-session.js`
+2. migrate `location.js` and `shadow-analysis.js` to it
+3. leave behavior unchanged
+4. verify step transitions and cleanup
+
+That gives us the pattern with the lowest product risk before touching the more interaction-heavy site setup and placement steps.

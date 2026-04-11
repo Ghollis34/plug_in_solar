@@ -51,6 +51,41 @@ export function render() {
             </div>
           </div>
 
+          <div class="card-flat card-flat-subtle task-guide-card">
+            <div class="task-guide-header">
+              <div class="task-guide-title">What To Do On This Step</div>
+              <div class="task-guide-summary" id="location-guide-summary">
+                Search or click the map to choose the property you want us to assess.
+              </div>
+            </div>
+            <div class="task-guide-list">
+              <div class="task-guide-item">
+                <span class="task-guide-index">1</span>
+                <div class="task-guide-copy">
+                  <strong>Find the property</strong>
+                  <span>Type a postcode or address, or click directly on the map if search misses it.</span>
+                </div>
+                <span class="task-guide-status" id="location-guide-search-status">To do</span>
+              </div>
+              <div class="task-guide-item">
+                <span class="task-guide-index">2</span>
+                <div class="task-guide-copy">
+                  <strong>Check the pin is on the right home</strong>
+                  <span>Once selected, the map will fly in and show a marker on the property.</span>
+                </div>
+                <span class="task-guide-status" id="location-guide-confirm-status">Waiting</span>
+              </div>
+              <div class="task-guide-item">
+                <span class="task-guide-index">3</span>
+                <div class="task-guide-copy">
+                  <strong>Move to site setup</strong>
+                  <span>Continue when the marker sits on the building you want quoted.</span>
+                </div>
+                <span class="task-guide-status" id="location-guide-next-status">Locked</span>
+              </div>
+            </div>
+          </div>
+
           <div id="location-info" class="location-selection-card hidden">
             <div class="location-selection-topline">
               <div>
@@ -72,7 +107,7 @@ export function render() {
       <div class="step-footer">
         <button class="btn btn-secondary" id="btn-back-location">← Back</button>
         <button class="btn btn-primary" id="btn-next-location" disabled>
-          Continue →
+          Continue To Site Setup →
         </button>
       </div>
     </div>
@@ -83,6 +118,7 @@ export function init() {
   const token = ++mapInitToken;
   showLocationMapLoading('Loading UK map…');
   initSearch();
+  updateLocationGuide();
 
   ensureMapRuntime()
     .then(() => {
@@ -100,6 +136,7 @@ export function init() {
         if (searchInput) searchInput.value = saved.displayName || '';
       } else if (searchInput) {
         searchInput.value = '';
+        updateLocationGuide();
       }
     })
     .catch((error) => {
@@ -305,6 +342,7 @@ function setLocation(lat, lng, displayName, options = {}) {
   document.getElementById('location-coords').textContent = `${lat.toFixed(5)}°N, ${Math.abs(lng).toFixed(5)}°${lng >= 0 ? 'E' : 'W'}`;
   document.getElementById('location-info')?.classList.remove('hidden');
   document.getElementById('btn-next-location').disabled = false;
+  updateLocationGuide();
 
   // Update marker
   if (marker) marker.remove();
@@ -325,6 +363,29 @@ function setLocation(lat, lng, displayName, options = {}) {
     duration: 2000,
     essential: true,
   });
+}
+
+function updateLocationGuide() {
+  const hasLocation = Boolean(getState('location'));
+  const summaryEl = document.getElementById('location-guide-summary');
+
+  if (summaryEl) {
+    summaryEl.textContent = hasLocation
+      ? 'Property selected. If the pin is on the right home, continue to Site Setup.'
+      : 'Search or click the map to choose the property you want us to assess.';
+  }
+
+  setGuideStatus('location-guide-search-status', hasLocation ? 'Done' : 'To do', hasLocation);
+  setGuideStatus('location-guide-confirm-status', hasLocation ? 'Ready' : 'Waiting', hasLocation);
+  setGuideStatus('location-guide-next-status', hasLocation ? 'Unlocked' : 'Locked', hasLocation);
+}
+
+function setGuideStatus(elementId, label, done = false) {
+  const element = document.getElementById(elementId);
+  if (!element) return;
+
+  element.textContent = label;
+  element.classList.toggle('is-done', done);
 }
 
 export function cleanup() {

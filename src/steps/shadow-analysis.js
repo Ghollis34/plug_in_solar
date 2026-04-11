@@ -95,13 +95,13 @@ export function render() {
           <div id="best-spot-result" class="hidden">
             <div class="sun-score">
               <div class="sun-score-value" id="best-spot-hours">--</div>
-              <div class="sun-score-label" id="best-spot-label">Analysing sun exposure...</div>
+              <div class="sun-score-label" id="best-spot-label">Analysing annual direct sun...</div>
             </div>
             <div class="analysis-note" id="best-spot-meta" style="margin-top: 8px;"></div>
           </div>
 
           <div class="analysis-note" style="margin-top: 10px;">
-            Green heatmap areas have the strongest year-round direct sun. Dark overlays show the current simulated shadow footprint for the selected time.
+            Green heatmap areas have the strongest year-round direct sun. Rankings use annual average direct sun, while the month and time controls only change the live shadow preview.
           </div>
 
           <div id="spaces-ranking" class="hidden"></div>
@@ -405,7 +405,7 @@ function renderRankingCards(ranked) {
               ${space.avgDailyHours}h/day
             </div>
             <div style="font-size: 0.7rem; color: var(--text-muted);">
-              ${space.id === ranked[0]?.id ? 'Recommended' : (space.id === selectedSpaceId ? 'Chosen for ROI' : `${Math.round(space.shadowFactor * 100)}% direct sun`)}
+              Annual average · ${space.id === ranked[0]?.id ? 'Recommended' : (space.id === selectedSpaceId ? 'Chosen for ROI' : `${Math.round(space.shadowFactor * 100)}% direct sun`)}
             </div>
           </div>
         </div>
@@ -451,9 +451,9 @@ function renderSelectionSummary(ranked) {
   const recommended = ranked[0];
 
   bestSpotEl.classList.remove('hidden');
-  hoursEl.textContent = `${selected.avgDailyHours}h`;
-  labelEl.textContent = `Using ${selected.name} for ROI`;
-  metaEl.textContent = `${selected.relativeDirectionLabel} · ${capitalise(selected.confidence)} confidence · Shadow factor ${Math.round(selected.shadowFactor * 100)}%${selected.id !== recommended.id ? ` · Recommended spot is ${recommended.name}` : ''}`;
+  hoursEl.textContent = `${selected.avgDailyHours}h/day`;
+  labelEl.textContent = 'Annual average direct sun';
+  metaEl.textContent = `Using ${selected.name} for ROI · ${selected.relativeDirectionLabel} · ${capitalise(selected.confidence)} confidence · Shadow factor ${Math.round(selected.shadowFactor * 100)}%${selected.id !== recommended.id ? ` · Recommended spot is ${recommended.name}` : ''}`;
 }
 
 function selectSpace(spaceId) {

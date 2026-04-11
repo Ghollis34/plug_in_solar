@@ -78,47 +78,38 @@ export function render() {
             <div class="metric-glass-note" id="nearby-buildings-note">Checking neighbouring buildings nearby…</div>
           </div>
 
-          <div class="form-group mb-md">
-            <div class="flex justify-between items-center" style="margin-bottom: 8px;">
-              <label class="form-label">Property facing</label>
-              <button class="btn btn-sm btn-secondary" id="btn-clear-direction" type="button" style="padding: 6px 10px; font-size: 0.75rem;">
-                Clear
-              </button>
+          <div class="card-flat card-flat-subtle task-guide-card">
+            <div class="task-guide-header">
+              <div class="task-guide-title">How This Step Works</div>
+              <div class="task-guide-summary" id="site-guide-summary">
+                The main job here is marking anything fixed on the site that could cast shade. Only adjust the house outline if it looks off.
+              </div>
             </div>
-
-            <div class="direction-grid" id="front-door-grid">
-              ${FRONT_DOOR_OPTIONS.map((option) => `
-                <button class="direction-chip ${facing === option.deg ? 'active' : ''}" data-facing="${option.deg}" type="button">
-                  ${option.label}
-                </button>
-              `).join('')}
-            </div>
-
-            <div class="flex items-center gap-md" style="margin-top: 12px;">
-              <input type="range" class="range-slider" id="front-door-slider" min="0" max="355" step="5" value="${facingValue}" />
-              <span id="front-door-value" style="min-width: 118px; text-align: right; font-weight: 600;">
-                ${facing == null ? 'Unset' : `${degreesToCompass(facing, 'long')} (${facing}°)`}
-              </span>
-            </div>
-
-            <div class="analysis-note" id="direction-note" style="margin-top: 10px;">
-              ${facing == null
-                ? 'Only needed if the map footprint is weak or missing. Otherwise we will use the detected building outline directly.'
-                : `Reference direction set to ${degreesToCompass(facing, 'long')}. We will use it as a fallback for wall snaps if the map outline is incomplete.`}
-            </div>
-          </div>
-
-          <div class="form-group mb-md">
-            <label class="form-label">Property position</label>
-            <div class="nudge-grid">
-              <button class="direction-chip" data-nudge="north" type="button">↑</button>
-              <button class="direction-chip" data-nudge="west" type="button">←</button>
-              <button class="direction-chip" data-nudge="reset" type="button">Reset</button>
-              <button class="direction-chip" data-nudge="east" type="button">→</button>
-              <button class="direction-chip" data-nudge="south" type="button">↓</button>
-            </div>
-            <div class="analysis-note" id="position-note" style="margin-top: 10px;">
-              Start with the detected property, then nudge the outline if the footprint is slightly off.
+            <div class="task-guide-list">
+              <div class="task-guide-item">
+                <span class="task-guide-index">1</span>
+                <div class="task-guide-copy">
+                  <strong>Add fixed shade obstacles</strong>
+                  <span>Draw fences, trees, and sheds that might block sunlight where panels could go.</span>
+                </div>
+                <span class="task-guide-status" id="site-guide-obstacles-status">Optional</span>
+              </div>
+              <div class="task-guide-item">
+                <span class="task-guide-index">2</span>
+                <div class="task-guide-copy">
+                  <strong>Check the outlined house if needed</strong>
+                  <span>Use the nudge arrows only if the outline looks slightly off. Property facing is just a fallback.</span>
+                </div>
+                <span class="task-guide-status" id="site-guide-outline-status">Ready</span>
+              </div>
+              <div class="task-guide-item">
+                <span class="task-guide-index">3</span>
+                <div class="task-guide-copy">
+                  <strong>Check the saved list</strong>
+                  <span>Continue when the list below matches the parts of the site that could affect the quote.</span>
+                </div>
+                <span class="task-guide-status" id="site-guide-review-status">Ready</span>
+              </div>
             </div>
           </div>
 
@@ -151,6 +142,13 @@ export function render() {
                   ${tool.icon} ${tool.label}
                 </button>
               `).join('')}
+            </div>
+          </div>
+
+          <div class="card-flat card-flat-subtle obstacle-help-card">
+            <div class="task-guide-title">Adding Obstacles</div>
+            <div class="task-guide-summary" id="obstacle-tool-help">
+              Click “Draw Fence”, then click the start and end of the fence line on the map.
             </div>
           </div>
 
@@ -205,23 +203,74 @@ export function render() {
           </div>
 
           <button class="btn btn-primary w-full mb-md" id="btn-place-obstacle">
-            🟧 Draw Fence
+            🟧 Draw Fence On Map
           </button>
           <button class="btn btn-secondary w-full mb-md hidden" id="btn-cancel-fence">
             ✕ Cancel Drawing
           </button>
 
           <div class="analysis-note mb-md" id="site-setup-status">
-            Confirm the property outline, then add any fences, sheds, or trees that could affect shading.
+            Add any fences, sheds, or trees that could block sunlight. Only adjust the house outline if it looks off.
           </div>
 
           <div id="obstacles-list"></div>
+
+          <div class="card-flat card-flat-subtle obstacle-help-card" style="margin-top: 14px;">
+            <div class="task-guide-title">House Alignment If Needed</div>
+            <div class="task-guide-summary">
+              Most users can leave this alone. Only use these controls if the outlined house looks slightly off on the map.
+            </div>
+          </div>
+
+          <div class="form-group mb-md">
+            <div class="flex justify-between items-center" style="margin-bottom: 8px;">
+              <label class="form-label">Property facing</label>
+              <button class="btn btn-sm btn-secondary" id="btn-clear-direction" type="button" style="padding: 6px 10px; font-size: 0.75rem;">
+                Clear
+              </button>
+            </div>
+
+            <div class="direction-grid" id="front-door-grid">
+              ${FRONT_DOOR_OPTIONS.map((option) => `
+                <button class="direction-chip ${facing === option.deg ? 'active' : ''}" data-facing="${option.deg}" type="button">
+                  ${option.label}
+                </button>
+              `).join('')}
+            </div>
+
+            <div class="flex items-center gap-md" style="margin-top: 12px;">
+              <input type="range" class="range-slider" id="front-door-slider" min="0" max="355" step="5" value="${facingValue}" />
+              <span id="front-door-value" style="min-width: 118px; text-align: right; font-weight: 600;">
+                ${facing == null ? 'Unset' : `${degreesToCompass(facing, 'long')} (${facing}°)`}
+              </span>
+            </div>
+
+            <div class="analysis-note" id="direction-note" style="margin-top: 10px;">
+              ${facing == null
+                ? 'Only needed if the map footprint is weak or missing. Otherwise we will use the detected building outline directly.'
+                : `Reference direction set to ${degreesToCompass(facing, 'long')}. We will use it as a fallback for wall snaps if the map outline is incomplete.`}
+            </div>
+          </div>
+
+          <div class="form-group mb-md">
+            <label class="form-label">Property position</label>
+            <div class="nudge-grid">
+              <button class="direction-chip" data-nudge="north" type="button">↑</button>
+              <button class="direction-chip" data-nudge="west" type="button">←</button>
+              <button class="direction-chip" data-nudge="reset" type="button">Reset</button>
+              <button class="direction-chip" data-nudge="east" type="button">→</button>
+              <button class="direction-chip" data-nudge="south" type="button">↓</button>
+            </div>
+            <div class="analysis-note" id="position-note" style="margin-top: 10px;">
+              Start with the detected property, then nudge the outline if the footprint is slightly off.
+            </div>
+          </div>
         </div>
       </div>
 
       <div class="step-footer">
         <button class="btn btn-secondary" id="btn-back-buildings">← Back</button>
-        <button class="btn btn-primary" id="btn-next-buildings">Continue →</button>
+        <button class="btn btn-primary" id="btn-next-buildings">Continue To Placement →</button>
       </div>
     </div>
   `;
@@ -268,6 +317,7 @@ export function init() {
       updateObstaclePositionNote();
       updateObstaclesList();
       setActiveObstacleTool(activeObstacleTool);
+      updateSetupGuide();
     })
     .catch((error) => {
       if (token !== mapInitToken) return;
@@ -459,10 +509,12 @@ function updatePositionNote() {
 
   if (eastWestMeters === '0.0' && northSouthMeters === '0.0') {
     noteEl.textContent = 'Outline is centred on the detected property.';
+    updateSetupGuide();
     return;
   }
 
   noteEl.textContent = `Outline offset: ${northSouthMeters}m ${northSouth}, ${eastWestMeters}m ${eastWest}.`;
+  updateSetupGuide();
 }
 
 function updateDirectionPreview() {
@@ -583,10 +635,12 @@ function setActiveObstacleTool(tool) {
 
   const actionBtn = document.getElementById('btn-place-obstacle');
   if (actionBtn) {
-    if (activeObstacleTool === 'tree') actionBtn.textContent = '🌳 Place Tree';
-    else if (activeObstacleTool === 'shed') actionBtn.textContent = '⬜ Place Shed / Wall';
-    else actionBtn.textContent = '🟧 Draw Fence';
+    if (activeObstacleTool === 'tree') actionBtn.textContent = '🌳 Place Tree On Map';
+    else if (activeObstacleTool === 'shed') actionBtn.textContent = '⬜ Place Shed / Wall On Map';
+    else actionBtn.textContent = '🟧 Draw Fence On Map';
   }
+
+  updateObstacleToolHelp();
 }
 
 function setPendingPlacement(mode) {
@@ -759,6 +813,11 @@ function updateObstaclesList() {
     obstacles: drawnObstacles,
     selectedObstacleId,
     heading: drawnObstacles.length ? `Saved Obstacles (${drawnObstacles.length})` : null,
+    note: drawnObstacles.length
+      ? 'Only include items that could realistically affect shade where the panels may go.'
+      : null,
+    emptyTitle: 'Saved obstacles',
+    emptyMessage: 'Nothing added yet. That is fine if there are no fences, trees, or sheds near the likely panel area.',
     highlightSelected: true,
     onSelect: selectObstacle,
     onRotate: rotateShed,
@@ -772,6 +831,8 @@ function updateObstaclesList() {
       updateObstaclesList();
     },
   });
+
+  updateSetupGuide();
 }
 
 function selectObstacle(obstacleId) {
@@ -845,6 +906,47 @@ function updateObstaclePositionNote() {
   noteEl.textContent = `${formatSelectedObstacleLabel()} selected. Use the arrows to reposition it in ${OBSTACLE_NUDGE_STEP_M.toFixed(1)}m steps.`;
 }
 
+function updateSetupGuide() {
+  const obstacleCount = drawnObstacles.length;
+  const summaryEl = document.getElementById('site-guide-summary');
+  const hasOutline = Boolean(draftCenter);
+
+  if (summaryEl) {
+    summaryEl.textContent = obstacleCount > 0
+      ? `You have ${obstacleCount} saved obstacle${obstacleCount === 1 ? '' : 's'}. Continue when the list below matches the site.`
+      : 'No obstacles saved yet. Add anything fixed that could cast shade, or continue if nothing nearby affects the panel area.';
+  }
+
+  setGuideStatus('site-guide-outline-status', hasOutline ? 'Ready' : 'Check', hasOutline);
+  setGuideStatus('site-guide-obstacles-status', obstacleCount > 0 ? `${obstacleCount} added` : 'Optional', obstacleCount > 0);
+  setGuideStatus('site-guide-review-status', hasOutline ? 'Ready' : 'Waiting', hasOutline);
+}
+
+function updateObstacleToolHelp() {
+  const helpEl = document.getElementById('obstacle-tool-help');
+  if (!helpEl) return;
+
+  if (activeObstacleTool === 'tree') {
+    helpEl.textContent = 'Use this for trees that could shade the panels. Set the height and canopy size first, then click roughly where the trunk meets the ground.';
+    return;
+  }
+
+  if (activeObstacleTool === 'shed') {
+    helpEl.textContent = 'Use this for sheds or garden walls. Set the front face direction first, then click the centre of the structure on the map.';
+    return;
+  }
+
+  helpEl.textContent = 'Use this for fences or side boundaries that could cast shade. Click “Draw Fence”, then click the start and end of the fence line.';
+}
+
+function setGuideStatus(elementId, label, done = false) {
+  const element = document.getElementById(elementId);
+  if (!element) return;
+
+  element.textContent = label;
+  element.classList.toggle('is-done', done);
+}
+
 function formatSelectedObstacleLabel() {
   return getSelectedObstacleLabel(drawnObstacles, selectedObstacleId);
 }
@@ -856,6 +958,7 @@ function showPlacementBanner(text) {
     banner.classList.remove('hidden');
     if (bannerText) bannerText.textContent = text;
   }
+  document.body.classList.add('map-placement-banner-active');
 }
 
 function hidePlacementBanner() {
@@ -863,6 +966,7 @@ function hidePlacementBanner() {
   if (banner) {
     banner.classList.add('hidden');
   }
+  document.body.classList.remove('map-placement-banner-active');
 }
 
 function updateCancelFenceButton() {
@@ -953,6 +1057,7 @@ function hideSiteMapLoading() {
 export function cleanup() {
   mapInitToken += 1;
   document.removeEventListener('keydown', handleEscapeKey);
+  document.body.classList.remove('map-placement-banner-active');
 
   if (map) {
     map.remove();

@@ -7,6 +7,7 @@ import { loadMapRuntime } from '../utils/map-runtime.js';
 import { renderObstacleList } from '../utils/obstacle-list.js';
 import { rotateShedById } from '../utils/site-obstacle-state.js';
 import { getShedRotationValue, setShedRotationValue, syncShedRotationUI } from '../utils/shed-rotation.js';
+import { getAnnualSolarRecommendation } from '../utils/solar-placement.js';
 
 let map = null;
 let activeMode = 'space';
@@ -21,6 +22,9 @@ let obstacleCounter = 0;
 let selectedSpaceId = null;
 let heatmapRefreshHandle = null;
 let heatmapIdleHandle = null;
+let heatmapRefineHandle = null;
+let heatmapRefineIdleHandle = null;
+let heatmapRenderNonce = 0;
 let initialSceneReady = false;
 let mapInitToken = 0;
 let maplibregl = null;
@@ -31,10 +35,14 @@ let drawObstacles = null;
 let drawSuitabilityHeatmap = null;
 let normalizeObstacles = null;
 let updatePanelMarkerElement = null;
+let getShadeModelBuildings = null;
 
 const SURFACE_SNAP_DISTANCE_M = 6;
 const WALL_SNAP_DISTANCE_M = 5;
 const PANEL_SNAP_OFFSET_M = 0.8;
+const HEATMAP_RADIUS_M = 16;
+const HEATMAP_PRIMARY_STEP_M = 2.5;
+const HEATMAP_REFINED_STEP_M = 2.0;
 
 export function render() {
   const obstacleCount = (getState('obstacles') || []).length;
@@ -79,6 +87,41 @@ export function render() {
             Add at least one candidate panel spot. Each marker stores its own orientation and tilt, and the heatmap shows where direct sun is strongest around the property.
           </p>
 
+          <div class="card-flat card-flat-subtle task-guide-card">
+            <div class="task-guide-header">
+              <div class="task-guide-title">How To Use This Step</div>
+              <div class="task-guide-summary" id="placement-guide-summary">
+                Start with the greener parts of the map, then drop two or three likely panel spots to compare.
+              </div>
+            </div>
+            <div class="task-guide-list">
+              <div class="task-guide-item">
+                <span class="task-guide-index">1</span>
+                <div class="task-guide-copy">
+                  <strong>Look for the greenest areas</strong>
+                  <span>Greener cells usually have the strongest year-round direct sun.</span>
+                </div>
+                <span class="task-guide-status" id="placement-guide-heatmap-status">Loading</span>
+              </div>
+              <div class="task-guide-item">
+                <span class="task-guide-index">2</span>
+                <div class="task-guide-copy">
+                  <strong>Pick a mounting surface</strong>
+                  <span>Choose the kind of surface the panel may sit on, such as fence, wall, or ground.</span>
+                </div>
+                <span class="task-guide-status" id="placement-guide-surface-status">Ground</span>
+              </div>
+              <div class="task-guide-item">
+                <span class="task-guide-index">3</span>
+                <div class="task-guide-copy">
+                  <strong>Add likely panel spots</strong>
+                  <span>Place at least one marker. Two or three spots gives the comparison step more to work with.</span>
+                </div>
+                <span class="task-guide-status" id="placement-guide-spots-status">Add 1+</span>
+              </div>
+            </div>
+          </div>
+
           <div class="form-group mb-md">
             <label class="form-label">Surface type</label>
             <div class="space-type-grid">
@@ -110,14 +153,17 @@ export function render() {
                      min="0" max="90" value="35" />
               <span id="tilt-value" style="min-width: 36px; text-align: right; font-weight: 600;">35°</span>
             </div>
+            <div class="analysis-note" id="tilt-note" style="margin-top: 8px;">
+              We prefill the annual-best tilt for the selected site and keep it editable for fixed hardware.
+            </div>
           </div>
 
           <button class="btn btn-primary w-full mb-md" id="btn-add-space">
-            📌 Place Panel Marker
+            📌 Add Ground / Garden Spot
           </button>
 
           <div class="analysis-note mb-md" id="placement-status">
-            Click the button, then drop candidate panel locations onto the map. To edit fences, sheds, or trees, go back to Site Setup.
+            Start with the greenest area, then add one or more likely panel spots. Go back to Site Setup if you need to change fences, sheds, or trees.
           </div>
 
           <div class="analysis-note mb-md">
@@ -132,7 +178,7 @@ export function render() {
       <div class="step-footer">
         <button class="btn btn-secondary" id="btn-back-spaces">← Back</button>
         <button class="btn btn-primary" id="btn-next-spaces" disabled>
-          Continue →
+          Continue To Shadows →
         </button>
       </div>
     </div>
@@ -174,7 +220,8 @@ export function init() {
       updateObstaclesList();
       updateSpacesList();
       updateNextButton();
-      updatePlacementStatus('Click the button, then drop candidate panel locations onto the map. To edit fences, sheds, or trees, go back to Site Setup.');
+      updatePlacementStatus('Start with the greenest area, then add one or more likely panel spots. Go back to Site Setup if you need to change fences, sheds, or trees.');
+      updatePlacementGuide();
       return initMap(location, token);
     })
     .catch((error) => {
@@ -185,7 +232,7 @@ export function init() {
 }
 
 function ensureMapRuntime() {
-  if (maplibregl && createStepMap && normalizeObstacles) {
+  if (maplibregl && createStepMap && normalizeObstacles && getShadeModelBuildings) {
     return Promise.resolve();
   }
 
@@ -198,6 +245,7 @@ function ensureMapRuntime() {
     drawSuitabilityHeatmap = runtime.drawSuitabilityHeatmap;
     normalizeObstacles = runtime.normalizeObstacles;
     updatePanelMarkerElement = runtime.updatePanelMarkerElement;
+    getShadeModelBuildings = runtime.getShadeModelBuildings;
   });
 }
 
@@ -252,21 +300,19 @@ function initControls() {
     button.addEventListener('click', () => {
       document.querySelectorAll('.space-type-btn').forEach((chip) => chip.classList.remove('active'));
       button.classList.add('active');
-      updateOrientationNote(button.dataset.type);
+      updatePlacementRecommendations(button.dataset.type);
+      updatePlacementGuide();
     });
   });
 
   const orientSlider = document.getElementById('orientation-slider');
-  const orientValue = document.getElementById('orientation-value');
   orientSlider?.addEventListener('input', () => {
-    const deg = parseInt(orientSlider.value, 10);
-    orientValue.textContent = `${degreesToCompass(deg, 'long')} (${deg}°)`;
+    syncOrientationValue(parseInt(orientSlider.value, 10));
   });
 
   const tiltSlider = document.getElementById('tilt-slider');
-  const tiltValue = document.getElementById('tilt-value');
   tiltSlider?.addEventListener('input', () => {
-    tiltValue.textContent = `${tiltSlider.value}°`;
+    syncTiltValue(parseInt(tiltSlider.value, 10));
   });
 
   document.querySelectorAll('[data-shed-rotation]').forEach((button) => {
@@ -291,7 +337,8 @@ function initControls() {
   });
 
   document.addEventListener('keydown', handleEscapeKey);
-  updateOrientationNote(document.querySelector('.space-type-btn.active')?.dataset.type || 'ground');
+  updatePlacementRecommendations(document.querySelector('.space-type-btn.active')?.dataset.type || 'ground');
+  updatePlacementGuide();
 }
 
 function setActiveMode(mode) {
@@ -377,7 +424,10 @@ function handleMapClick(lat, lng) {
 
   const space = addSpace(lat, lng);
   cancelPlacement();
-  updatePlacementStatus(space?.alignmentHint ? `${space.alignmentHint}.` : 'Panel marker added.');
+  const compareHint = drawnSpaces.length < 2
+    ? ' Add another likely spot if you want us to compare options.'
+    : '';
+  updatePlacementStatus(space?.alignmentHint ? `${space.alignmentHint}.${compareHint}` : `Panel spot added.${compareHint}`);
 }
 
 function addSpace(lat, lng) {
@@ -502,9 +552,10 @@ function createSpacePopupContent(space) {
 }
 
 function refreshObstacles() {
-  if (map?.isStyleLoaded()) {
-    drawObstacles(map, drawnObstacles);
-  }
+  if (!hasPlacementMapStyle()) return false;
+
+  drawObstacles(map, drawnObstacles);
+  return true;
 }
 
 function refreshObstaclesAfterSettledPaint(onDone) {
@@ -548,13 +599,15 @@ function refreshObstaclesDeferred(onDone) {
 }
 
 function renderPlacementScene(options = {}) {
-  if (!map?.isStyleLoaded()) return;
+  if (!hasPlacementMapStyle()) return;
   refreshObstacles();
   queueHeatmapRefresh(options);
 }
 
 function queueHeatmapRefresh(options = {}) {
   cancelScheduledHeatmapRefresh();
+  heatmapRenderNonce += 1;
+  const renderNonce = heatmapRenderNonce;
   setHeatmapStatus('Rendering suitability surface…');
 
   const delay = options.immediate ? 40 : 170;
@@ -564,26 +617,31 @@ function queueHeatmapRefresh(options = {}) {
       heatmapRefreshHandle = null;
 
       try {
-        if (!map?.isStyleLoaded()) {
+        if (!hasPlacementMapStyle()) {
           hidePlacementMapLoading();
           setHeatmapStatus('Suitability surface unavailable.');
           return;
         }
 
         const center = getHeatmapCenter();
-        const buildings = getState('buildings') || [];
+        const buildings = getPlacementHeatmapBuildings(center);
         const featureCollection = samplePlacementHeatmap(center.lat, center.lng, buildings, drawnObstacles, {
-          radiusM: 14,
-          stepM: 2.5,
+          radiusM: HEATMAP_RADIUS_M,
+          stepM: options.stepM ?? HEATMAP_PRIMARY_STEP_M,
           fastMode: options.fastMode === true,
         });
         drawSuitabilityHeatmap(map, featureCollection);
         refreshObstacles();
-        setHeatmapStatus('Suitability surface ready.');
         initialSceneReady = true;
+        setHeatmapStatus('Suitability surface ready.');
         refreshPanelMarkers();
+
+        if (shouldRefineHeatmap(options)) {
+          scheduleHeatmapRefinement(renderNonce);
+        }
       } catch (error) {
         console.error('Failed to render placement heatmap:', error);
+        initialSceneReady = false;
         setHeatmapStatus('Suitability surface failed to load.');
       }
     };
@@ -595,6 +653,53 @@ function queueHeatmapRefresh(options = {}) {
 
     runRender();
   }, delay);
+}
+
+function shouldRefineHeatmap(options = {}) {
+  return options.fastMode === true && options.refine !== false;
+}
+
+function scheduleHeatmapRefinement(renderNonce) {
+  const runRefinement = () => {
+    heatmapRefineHandle = null;
+    heatmapRefineIdleHandle = null;
+
+    if (renderNonce !== heatmapRenderNonce || !hasPlacementMapStyle()) {
+      return;
+    }
+
+    if (typeof map.isMoving === 'function' && map.isMoving()) {
+      scheduleHeatmapRefinement(renderNonce);
+      return;
+    }
+
+    try {
+      const center = getHeatmapCenter();
+      const buildings = getPlacementHeatmapBuildings(center);
+      const featureCollection = samplePlacementHeatmap(center.lat, center.lng, buildings, drawnObstacles, {
+        radiusM: HEATMAP_RADIUS_M,
+        stepM: HEATMAP_REFINED_STEP_M,
+        fastMode: true,
+      });
+
+      if (renderNonce !== heatmapRenderNonce || !hasPlacementMapStyle()) {
+        return;
+      }
+
+      drawSuitabilityHeatmap(map, featureCollection);
+      refreshObstacles();
+      refreshPanelMarkers();
+    } catch (error) {
+      console.error('Failed to refine placement heatmap:', error);
+    }
+  };
+
+  if (typeof window.requestIdleCallback === 'function') {
+    heatmapRefineIdleHandle = window.requestIdleCallback(runRefinement, { timeout: 900 });
+    return;
+  }
+
+  heatmapRefineHandle = window.setTimeout(runRefinement, 260);
 }
 
 function selectSpace(spaceId) {
@@ -624,7 +729,15 @@ function updateSpacesList() {
   if (!listEl) return;
 
   if (drawnSpaces.length === 0) {
-    listEl.innerHTML = '';
+    listEl.innerHTML = `
+      <div class="card-flat card-flat-subtle" style="padding: 12px; margin-top: 12px;">
+        <div style="font-weight: 600; margin-bottom: 4px;">No panel spots added yet</div>
+        <div style="font-size: 0.85rem; color: var(--text-secondary);">
+          Pick a surface type, click the button above, then click the map where a panel could realistically go.
+        </div>
+      </div>
+    `;
+    updatePlacementGuide();
     return;
   }
 
@@ -677,6 +790,8 @@ function updateSpacesList() {
       updateNextButton();
     });
   });
+
+  updatePlacementGuide();
 }
 
 function updateObstaclesList() {
@@ -690,7 +805,7 @@ function updateObstaclesList() {
       ? 'These are the fences, sheds, and trees from Site Setup. They are read-only here and used for placement snapping and shadow scoring.'
       : null,
     emptyTitle: 'Site obstacles',
-    emptyMessage: 'No fences, sheds, or trees have been carried into this step yet. Go back to Site Setup if you need to add them.',
+    emptyMessage: 'No fences, sheds, or trees have been carried into this step yet. That is fine if nothing nearby affects shade, or go back to Site Setup to add them.',
     onRotate: rotateShed,
     onRemove: (id) => {
       drawnObstacles = drawnObstacles.filter((obstacle) => obstacle.id !== id);
@@ -725,6 +840,8 @@ function updateNextButton() {
   if (btn) {
     btn.disabled = drawnSpaces.length === 0;
   }
+
+  updatePlacementGuide();
 }
 
 function updatePlacementStatus(message) {
@@ -741,11 +858,13 @@ function showPlacementBanner(text) {
     banner.classList.remove('hidden');
     if (bannerText) bannerText.textContent = text;
   }
+  document.body.classList.add('map-placement-banner-active');
 }
 
 function hidePlacementBanner() {
   const banner = document.getElementById('placement-banner');
   if (banner) banner.classList.add('hidden');
+  document.body.classList.remove('map-placement-banner-active');
 }
 
 function updateCancelFenceButton() {
@@ -763,35 +882,132 @@ function handleEscapeKey(e) {
   }
 }
 
-function updateOrientationNote(typeId) {
+function updatePlacementRecommendations(typeId) {
+  const recommendation = getPlacementRecommendation();
+  applyPlacementRecommendationControls(recommendation);
+  updateOrientationNote(typeId, recommendation);
+  updateTiltNote(typeId, recommendation);
+  updatePlacementActionLabel(typeId);
+}
+
+function getPlacementRecommendation() {
+  return getAnnualSolarRecommendation(getState('location')?.lat);
+}
+
+function applyPlacementRecommendationControls(recommendation) {
+  const orientationSlider = document.getElementById('orientation-slider');
+  const tiltSlider = document.getElementById('tilt-slider');
+
+  if (orientationSlider) {
+    orientationSlider.value = String(recommendation.orientation);
+  }
+
+  if (tiltSlider) {
+    tiltSlider.value = String(recommendation.tilt);
+  }
+
+  syncOrientationValue(recommendation.orientation);
+  syncTiltValue(recommendation.tilt);
+}
+
+function syncOrientationValue(value) {
+  const orientValue = document.getElementById('orientation-value');
+  if (!orientValue || !Number.isFinite(value)) return;
+  orientValue.textContent = `${degreesToCompass(value, 'long')} (${value}°)`;
+}
+
+function syncTiltValue(value) {
+  const tiltValue = document.getElementById('tilt-value');
+  if (!tiltValue || !Number.isFinite(value)) return;
+  tiltValue.textContent = `${value}°`;
+}
+
+function updatePlacementActionLabel(typeId) {
+  const button = document.getElementById('btn-add-space');
+  if (!button) return;
+
+  const typeInfo = getSpaceTypeInfo(typeId);
+  button.textContent = `📌 Add ${typeInfo.label} Spot`;
+}
+
+function updatePlacementGuide() {
+  const summaryEl = document.getElementById('placement-guide-summary');
+  const activeTypeId = getActiveSpaceTypeId();
+  const activeType = getSpaceTypeInfo(activeTypeId);
+  const spaceCount = drawnSpaces.length;
+
+  if (summaryEl) {
+    summaryEl.textContent = spaceCount > 0
+      ? `${spaceCount} candidate spot${spaceCount === 1 ? '' : 's'} added. Continue or add more if you want a stronger comparison.`
+      : 'Start with the greener parts of the map, then drop two or three likely panel spots to compare.';
+  }
+
+  setGuideStatus('placement-guide-heatmap-status', initialSceneReady ? 'Ready' : 'Loading', initialSceneReady);
+  setGuideStatus('placement-guide-surface-status', activeType.label, Boolean(activeTypeId));
+  setGuideStatus('placement-guide-spots-status', spaceCount > 0 ? `${spaceCount} added` : 'Add 1+', spaceCount > 0);
+}
+
+function getActiveSpaceTypeId() {
+  return document.querySelector('.space-type-btn.active')?.dataset.type || 'ground';
+}
+
+function setGuideStatus(elementId, label, done = false) {
+  const element = document.getElementById(elementId);
+  if (!element) return;
+
+  element.textContent = label;
+  element.classList.toggle('is-done', done);
+}
+
+function updateOrientationNote(typeId, recommendation) {
   const noteEl = document.getElementById('orientation-note');
   if (!noteEl) return;
 
   if (typeId === 'fence') {
-    noteEl.textContent = 'Fence-mounted panels snap onto the nearest drawn fence. Successful snaps show an amber alignment strip beneath the marker.';
+    noteEl.textContent = `Fence-mounted panels snap onto the nearest drawn fence and stay on your side of the boundary. If a snap fails, we fall back to ${degreesToCompass(recommendation.orientation, 'long')} (${recommendation.orientation}°).`;
     return;
   }
 
   if (typeId === 'wall') {
     noteEl.textContent = getPrimaryBuildingFootprint().length >= 3
-      ? 'Click near a house wall to snap the panel onto that wall. Successful snaps show a blue alignment strip beneath the marker.'
-      : 'Set the house direction first if you want wall mounts to snap to the house outline.';
+      ? `Click near a house wall to snap the panel onto that wall. If a snap misses, the fallback facing is ${degreesToCompass(recommendation.orientation, 'long')} (${recommendation.orientation}°).`
+      : `Set the house direction first if you want wall mounts to snap to the house outline. Until then, the fallback facing is ${degreesToCompass(recommendation.orientation, 'long')} (${recommendation.orientation}°).`;
     return;
   }
 
-  noteEl.textContent = 'Pick the general facing if you know it. Fence-mounted panels snap to fences, and wall mounts snap to the house outline.';
+  noteEl.textContent = `Prefilled for this site: ${degreesToCompass(recommendation.orientation, 'long')} (${recommendation.orientation}°) for the strongest year-round exposure. You can still override it.`;
+}
+
+function updateTiltNote(typeId, recommendation) {
+  const noteEl = document.getElementById('tilt-note');
+  if (!noteEl) return;
+
+  if (typeId === 'fence') {
+    noteEl.textContent = `Annual tilt target here is about ${recommendation.tilt}°. Keep that if the fence bracket is adjustable; otherwise set it to match the fixed mount.`;
+    return;
+  }
+
+  if (typeId === 'wall') {
+    noteEl.textContent = `Annual tilt target here is about ${recommendation.tilt}°. Leave it if you are using an angled wall bracket, or adjust it for a more upright mount.`;
+    return;
+  }
+
+  noteEl.textContent = `Prefilled to about ${recommendation.tilt}° from the site latitude for stronger year-round exposure.`;
 }
 
 function getNearestFenceAlignment(lat, lng) {
   const fences = drawnObstacles.filter((obstacle) => obstacle.type === 'fence' && obstacle.points?.length >= 2);
   if (!fences.length) return null;
+  const userSideReference = getPrimaryBuildingCentroid();
 
   const scored = fences.map((fence) => {
     const start = fence.points[0];
     const end = fence.points[1];
     return getSurfaceAlignment(start, end, lat, lng, {
-      hint: 'Snapped to nearby fence',
+      hint: userSideReference ? 'Snapped to nearby fence on your side' : 'Snapped to nearby fence',
       offsetM: PANEL_SNAP_OFFSET_M,
+      referencePoint: userSideReference,
+      referenceMode: userSideReference ? 'toward' : 'auto',
       surfaceType: 'fence',
     });
   }).sort((a, b) => a.distanceM - b.distanceM);
@@ -801,12 +1017,12 @@ function getNearestFenceAlignment(lat, lng) {
 
 function drawHousePreview() {
   const userBuilding = getPrimaryBuilding();
-  if (!map?.isStyleLoaded() || !userBuilding) return;
+  if (!hasPlacementMapStyle() || !userBuilding) return;
   drawBuildingFootprintPreview(map, userBuilding);
 }
 
 function fitMapToPlacementSite(onComplete) {
-  if (!map?.isStyleLoaded()) {
+  if (!hasPlacementMapStyle()) {
     onComplete?.();
     return;
   }
@@ -857,7 +1073,7 @@ function fitMapToPlacementSite(onComplete) {
 
 function applyPlacementSceneLighting() {
   const location = getState('location');
-  if (!map?.isStyleLoaded() || !location) return;
+  if (!hasPlacementMapStyle() || !location) return;
 
   const center = getHeatmapCenter();
   const lightTime = new Date();
@@ -897,6 +1113,19 @@ function getHeatmapCenter() {
   return center
     ? { lat: center.lat, lng: center.lng }
     : getPlacementCenter(getState('location'));
+}
+
+function getPlacementHeatmapBuildings(center) {
+  const buildings = getState('buildings') || [];
+
+  if (!map || typeof getShadeModelBuildings !== 'function') {
+    return buildings;
+  }
+
+  return getShadeModelBuildings(map, buildings, {
+    center,
+    radiusM: 120,
+  });
 }
 
 function getPlacementBounds() {
@@ -961,6 +1190,15 @@ function getMarkerScreenRotation(space) {
   return normalizeDegrees(worldRotation - (map?.getBearing() || 0));
 }
 
+function hasPlacementMapStyle() {
+  if (!map || typeof map.getStyle !== 'function') {
+    return false;
+  }
+
+  const style = map.getStyle();
+  return Array.isArray(style?.layers) && style.layers.length > 0;
+}
+
 function cancelScheduledHeatmapRefresh() {
   if (heatmapRefreshHandle) {
     window.clearTimeout(heatmapRefreshHandle);
@@ -971,6 +1209,16 @@ function cancelScheduledHeatmapRefresh() {
     window.cancelIdleCallback(heatmapIdleHandle);
     heatmapIdleHandle = null;
   }
+
+  if (heatmapRefineHandle) {
+    window.clearTimeout(heatmapRefineHandle);
+    heatmapRefineHandle = null;
+  }
+
+  if (heatmapRefineIdleHandle && typeof window.cancelIdleCallback === 'function') {
+    window.cancelIdleCallback(heatmapRefineIdleHandle);
+    heatmapRefineIdleHandle = null;
+  }
 }
 
 function setHeatmapStatus(message) {
@@ -978,6 +1226,8 @@ function setHeatmapStatus(message) {
   if (statusEl) {
     statusEl.textContent = message;
   }
+
+  updatePlacementGuide();
 }
 
 function showPlacementMapLoading(message) {
@@ -1019,6 +1269,20 @@ function getPrimaryBuildingFootprint() {
   return [];
 }
 
+function getPrimaryBuildingCentroid() {
+  const footprint = getPrimaryBuildingFootprint();
+  if (footprint.length >= 3) {
+    return getPointCentroid(footprint);
+  }
+
+  const building = getPrimaryBuilding();
+  if (Number.isFinite(building?.lat) && Number.isFinite(building?.lng)) {
+    return { lat: building.lat, lng: building.lng };
+  }
+
+  return null;
+}
+
 function resolveSurfaceAlignment(typeId, lat, lng) {
   if (typeId === 'fence') {
     return getNearestFenceAlignment(lat, lng);
@@ -1035,13 +1299,14 @@ function getNearestWallAlignment(lat, lng) {
   const footprint = getPrimaryBuildingFootprint();
   if (footprint.length < 3) return null;
 
-  const centroid = getPointCentroid(footprint);
+  const centroid = getPrimaryBuildingCentroid();
   const scored = footprint.map((point, index) => {
     const next = footprint[(index + 1) % footprint.length];
     return getSurfaceAlignment(point, next, lat, lng, {
       hint: 'Snapped to house wall',
       offsetM: PANEL_SNAP_OFFSET_M,
-      outwardReference: centroid,
+      referencePoint: centroid,
+      referenceMode: 'away',
       surfaceType: 'wall',
     });
   }).sort((a, b) => a.distanceM - b.distanceM);
@@ -1052,7 +1317,10 @@ function getNearestWallAlignment(lat, lng) {
 function getSurfaceAlignment(start, end, lat, lng, options = {}) {
   const projection = projectToSegmentMeters(lat, lng, start, end);
   const baseBearing = normalizeDegrees(Math.round(getBearingBetweenPoints(start.lat, start.lng, end.lat, end.lng)));
-  const facing = normalizeDegrees(Math.round(resolveFacingBearing(baseBearing, projection, start, options.outwardReference)));
+  const facing = normalizeDegrees(Math.round(resolveFacingBearing(baseBearing, projection, start, {
+    referencePoint: options.referencePoint ?? options.outwardReference ?? null,
+    referenceMode: options.referenceMode || 'away',
+  })));
   const offsetVector = getBearingVector(facing);
   const snappedPoint = metersToLatLng(
     start.lat,
@@ -1111,18 +1379,24 @@ function projectToSegmentMeters(lat, lng, start, end) {
   };
 }
 
-function resolveFacingBearing(baseBearing, projection, origin, outwardReference) {
+function resolveFacingBearing(baseBearing, projection, origin, options = {}) {
   const candidateA = normalizeDegrees(baseBearing + 90);
   const candidateB = normalizeDegrees(baseBearing - 90);
+  const referencePoint = options.referencePoint || null;
 
-  if (outwardReference) {
-    const referenceMeters = latLngToMeters(origin.lat, origin.lng, outwardReference.lat, outwardReference.lng);
+  if (referencePoint) {
+    const referenceMeters = latLngToMeters(origin.lat, origin.lng, referencePoint.lat, referencePoint.lng);
     const fromProjection = {
       dx: referenceMeters.dx - projection.projX,
       dy: referenceMeters.dy - projection.projY,
     };
     const dotA = dotBearing(candidateA, fromProjection);
     const dotB = dotBearing(candidateB, fromProjection);
+
+    if (options.referenceMode === 'toward') {
+      return dotA >= dotB ? candidateA : candidateB;
+    }
+
     return dotA <= dotB ? candidateA : candidateB;
   }
 
@@ -1162,7 +1436,9 @@ function getEffectiveSelectedSpaceId() {
 
 export function cleanup() {
   mapInitToken += 1;
+  heatmapRenderNonce += 1;
   cancelScheduledHeatmapRefresh();
+  document.body.classList.remove('map-placement-banner-active');
 
   document.removeEventListener('keydown', handleEscapeKey);
 
@@ -1179,4 +1455,5 @@ export function cleanup() {
   selectedSpaceId = null;
   initialSceneReady = false;
   heatmapIdleHandle = null;
+  heatmapRefineIdleHandle = null;
 }
