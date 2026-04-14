@@ -14,6 +14,7 @@ export function calculateROI({ kitCost, annualKwh, annualValuePerKwh, annualFixe
   const valuePerKwh = Number.isFinite(annualValuePerKwh) ? annualValuePerKwh : (config.electricityPrice / 100);
   const fixedAnnualValue = Number.isFinite(annualFixedValue) ? annualFixedValue : 0;
   const degradation = config.panelDegradation;
+  const annualValueGrowthRate = clamp(config.annualValueGrowthRate ?? 0, 0, 0.15);
   
   // Annual savings in first year
   const annualSavingsYear1 = (annualKwh * valuePerKwh) + fixedAnnualValue;
@@ -28,8 +29,9 @@ export function calculateROI({ kitCost, annualKwh, annualValuePerKwh, annualFixe
   
   for (let year = 1; year <= 25; year++) {
     const degradationFactor = Math.pow(1 - degradation, year - 1);
+    const valueGrowthFactor = Math.pow(1 + annualValueGrowthRate, year - 1);
     const yearKwh = annualKwh * degradationFactor;
-    const yearSavings = (yearKwh * valuePerKwh) + fixedAnnualValue;
+    const yearSavings = ((yearKwh * valuePerKwh) + fixedAnnualValue) * valueGrowthFactor;
     cumSavings += yearSavings;
     
     yearlyData.push({
@@ -93,6 +95,7 @@ export function calculateROI({ kitCost, annualKwh, annualValuePerKwh, annualFixe
     electricityPriceSource: config.electricityPriceSource,
     valuePerKwh: Math.round(valuePerKwh * 10000) / 10000,
     annualFixedValue: Math.round(fixedAnnualValue * 100) / 100,
+    annualValueGrowthRate,
     kitCost,
   };
 }
@@ -114,4 +117,8 @@ export function formatPayback(years) {
   if (fullYears === 0) return `${months} months`;
   if (months === 0) return `${fullYears} years`;
   return `${fullYears} years ${months} months`;
+}
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
 }

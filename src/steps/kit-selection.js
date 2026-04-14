@@ -1,6 +1,13 @@
 import config from '../data/config.json';
 import kitsData from '../data/kits.json';
 import { fetchSolarData } from '../utils/pvgis.js';
+import {
+  findPricedKitById,
+  getKitPriceDetailLabel,
+  getKitPriceStatusLabel,
+  getPricedKits,
+  loadLivePricing,
+} from '../utils/kit-pricing.js';
 import { buildScenario, assumesNoSolarSpill, usesFullSolarCapture } from '../utils/quote-model.js';
 import { formatCurrency, formatPayback } from '../utils/roi.js';
 import { escapeHtml, safeDataId } from '../utils/security.js';
@@ -24,6 +31,11 @@ let comparisonState = {
   context: null,
   error: '',
 };
+let pricingState = {
+  status: 'idle',
+  feed: null,
+  kits: getPricedKits(),
+};
 
 export function render() {
   activeFilters = { wattage: 'all', brand: 'all' };
@@ -35,7 +47,7 @@ export function render() {
     error: '',
   };
 
-  const selectedKit = getState('selectedKit');
+  const selectedKit = resolveSelectedKitForUi();
   return `
     <div class="step-page scrollable">
       <div class="step-header">
@@ -105,8 +117,9 @@ export function render() {
 
       <div class="step-footer">
         <button class="btn btn-secondary" id="btn-back-kits">← Back</button>
+        <div class="kit-step-status" id="kit-step-status">${getKitStepStatusText(selectedKit)}</div>
         <button class="btn btn-primary" id="btn-next-kits" ${selectedKit ? '' : 'disabled'}>
-          Continue →
+          Continue to Results →
         </button>
       </div>
     </div>
@@ -118,6 +131,7 @@ export function init() {
   initSortControls();
   initKitSelection();
   updateNextButton();
+  loadKitPriceFeed(getSelectedOrRecommendedSpace()?.type || null);
   loadKitComparisons();
 
   document.getElementById('btn-back-kits')?.addEventListener('click', () => {
@@ -151,7 +165,7 @@ function renderComparisonSummary() {
         </div>
         <div class="map-panel-pill">Loading live model</div>
       </div>
-      <div class="analysis-note">Fetching PVGIS irradiance data and applying the same ROI model used on the results page.</div>
+      <div class="analysis-note">Fetching PVGIS irradiance data, loading the retailer price feed, and applying the same ROI model used on the results page.</div>
     `;
   }
 
@@ -203,8 +217,9 @@ function renderComparisonSummary() {
       This page is ranking kits using ${escapeHtml(usageCopy)} and ${escapeHtml(tariffCopy)} on
       <strong>${escapeHtml(selectedSpace?.name || 'your selected space')}</strong> facing
       <strong>${escapeHtml(getCompassDirection(selectedSpace?.orientation || 180))}</strong> at
-      <strong>${selectedSpace?.tilt || 35}°</strong> tilt. Headline numbers on each card show the upper-end modelled outcome, with the wider range kept underneath.
+      <strong>${selectedSpace?.tilt || 35}°</strong> tilt. Headline numbers on each card show the upper-end modelled outcome, with the wider range kept underneath. Payback assumes saved electricity value rises by about ${Math.round((config.annualValueGrowthRate ?? 0) * 100)}% per year.
     </p>
+    <div class="analysis-note" style="margin-bottom: 14px;">Kit pricing prefers live official retailer pricing where we have a mapped source, and falls back to the in-app catalogue where we do not.</div>
     <div class="kit-comparison-stats">
       <div class="kit-comparison-stat">
         <div class="kit-comparison-stat-label">Top output right now</div>
@@ -219,7 +234,7 @@ function renderComparisonSummary() {
       <div class="kit-comparison-stat">
         <div class="kit-comparison-stat-label">Model assumption</div>
         <div class="kit-comparison-stat-value">${assumesNoSolarSpill() ? 'Battery capture active' : 'Spill modelled'}</div>
-        <div class="kit-comparison-stat-note">${assumesNoSolarSpill() ? 'Solar-only kits can still spill unpaid energy. Battery kits are modelled as capturing that solar on-site and may add smart-tariff value.' : 'Export/spill handling still affects the value model.'}</div>
+        <div class="kit-comparison-stat-note">${assumesNoSolarSpill() ? 'Solar-only kits still allow a small amount of unpaid spill, but the model assumes strong daytime home use. Battery kits capture that solar on-site and add smart-tariff value.' : 'Export/spill handling still affects the value model.'}</div>
       </div>
     </div>
   `;
@@ -280,8 +295,10 @@ function renderKitCard(item, selectedId, index) {
       ? smartTariffValue > 0
         ? `${formatCurrency(smartTariffValue)} smart-tariff value in the upper-end model`
         : `${Math.round(comparison.optimisticValueModel.shiftedKwh)} kWh/year shifted later with storage`
-      : `${Math.round(comparison.optimisticValueModel.exportKwh)} kWh/year still spilling in the upper-end solar-only model`
+      : `${Math.round(comparison.optimisticValueModel.exportKwh)} kWh/year still spilling in the upper-end solar-only model after assuming strong daytime home use`
     : (kit.hasBattery ? 'Battery storage included in this package' : 'Solar-only starter package');
+  const priceStatus = getKitPriceStatusLabel(kit.priceMeta);
+  const priceDetail = getKitPriceDetailLabel(kit.priceMeta);
 
   return `
     <div class="card kit-card ${isSelected ? 'selected' : ''}" data-kit-id="${safeDataId(kit.id)}" id="kit-${safeDataId(kit.id)}">
@@ -329,6 +346,7 @@ function renderKitCard(item, selectedId, index) {
           <div>
             <div class="kit-price">£${kit.price}</div>
             <div class="kit-price-note">${comparison ? `${comparison.optimisticRoi.roiPercent}% 25-year ROI in the upper-end model` : (kit.hasBattery ? 'Solar + storage package' : 'Solar generation only')}</div>
+            <div class="kit-price-source" title="${escapeHtml(priceDetail)}">${escapeHtml(priceStatus)}</div>
           </div>
           <div class="kit-select-hint">${isSelected ? 'Selected for quote' : 'Click to select'}</div>
         </div>
@@ -353,6 +371,9 @@ function loadKitComparisons() {
   const selectedSpace = getSelectedOrRecommendedSpace();
   const annualUsageKwh = getResolvedAnnualUsageKwh();
   const pricing = getResolvedElectricityPricing();
+  const spaceType = selectedSpace?.type || null;
+
+  loadKitPriceFeed(spaceType);
 
   if (!location || !selectedSpace) {
     comparisonState = {
@@ -388,11 +409,15 @@ function loadKitComparisons() {
     1
   );
 
-  fetchSolarData(location.lat, location.lng, tilt, pvgisAzimuth)
-    .then((solarData) => {
+  Promise.all([
+    fetchSolarData(location.lat, location.lng, tilt, pvgisAzimuth),
+    loadKitPriceFeed(spaceType),
+  ])
+    .then(([solarData, livePricing]) => {
       if (requestId !== comparisonRequestId) return;
+      const pricedKits = getPricedKits(livePricing, { spaceType });
 
-      const scenarios = kitsData.map((kit) => buildScenario(kit, solarData, {
+      const scenarios = pricedKits.map((kit) => buildScenario(kit, solarData, {
         baselineFactor,
         conservativeFactor,
         optimisticFactor,
@@ -482,7 +507,7 @@ function initSortControls() {
 function getVisibleItems() {
   const sourceItems = comparisonState.status === 'ready'
     ? sortScenarios(comparisonState.scenarios)
-    : [...kitsData];
+    : [...pricingState.kits];
 
   return sourceItems.filter((item) => {
     const kit = item?.kit || item;
@@ -554,29 +579,88 @@ function initKitSelection() {
   document.querySelectorAll('.kit-card').forEach((card) => {
     card.addEventListener('click', () => {
       const kitId = card.dataset.kitId;
-      const kit = kitsData.find((entry) => entry.id === kitId);
+      const kit = findPricedKitById(kitId, pricingState.feed, { spaceType: getSelectedSpaceType() });
       if (!kit) return;
 
       const currentKit = getState('selectedKit');
+      let nextSelectedId = null;
       if (currentKit?.id === kitId) {
         setState({ selectedKit: null });
-        card.classList.remove('selected');
       } else {
         setState({ selectedKit: kit });
-        document.querySelectorAll('.kit-card').forEach((entry) => entry.classList.remove('selected'));
-        card.classList.add('selected');
+        nextSelectedId = kit.id;
       }
 
+      syncSelectedKitUi(nextSelectedId);
       updateNextButton();
     });
   });
 }
 
+function loadKitPriceFeed(spaceType = null) {
+  pricingState = {
+    ...pricingState,
+    status: 'loading',
+  };
+
+  return loadLivePricing()
+    .then((feed) => {
+      pricingState = {
+        status: 'ready',
+        feed,
+        kits: getPricedKits(feed, { spaceType }),
+      };
+      refreshComparisonUi();
+      return feed;
+    })
+    .catch(() => {
+      pricingState = {
+        status: 'error',
+        feed: null,
+        kits: getPricedKits(null, { spaceType }),
+      };
+      refreshComparisonUi();
+      return null;
+    });
+}
+
+function getSelectedSpaceType() {
+  return comparisonState.context?.selectedSpace?.type || getSelectedOrRecommendedSpace()?.type || null;
+}
+
 function updateNextButton() {
+  const selectedKit = resolveSelectedKitForUi();
   const nextButton = document.getElementById('btn-next-kits');
   if (nextButton) {
-    nextButton.disabled = !getState('selectedKit');
+    nextButton.disabled = !selectedKit;
   }
+
+  const statusEl = document.getElementById('kit-step-status');
+  if (statusEl) {
+    statusEl.textContent = getKitStepStatusText(selectedKit);
+  }
+}
+
+function syncSelectedKitUi(selectedId = null) {
+  document.querySelectorAll('.kit-card').forEach((entry) => {
+    const isSelected = entry.dataset.kitId === selectedId;
+    entry.classList.toggle('selected', isSelected);
+
+    const hintEl = entry.querySelector('.kit-select-hint');
+    if (hintEl) {
+      hintEl.textContent = isSelected ? 'Selected for quote' : 'Click to select';
+    }
+  });
+}
+
+function getKitStepStatusText(selectedKit) {
+  return selectedKit?.name
+    ? `${selectedKit.name} selected. Continue to open the full quote.`
+    : 'Select a kit to continue to the full quote.';
+}
+
+function resolveSelectedKitForUi() {
+  return findPricedKitById(getState('selectedKit'), pricingState.feed, { spaceType: getSelectedSpaceType() });
 }
 
 function getCompatibilityState(kit) {

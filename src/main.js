@@ -56,7 +56,6 @@ function navigateNext() {
     cleanupCurrentStep();
     currentStep++;
     renderStep(currentStep);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 }
 
@@ -65,7 +64,6 @@ function navigateBack() {
     cleanupCurrentStep();
     currentStep--;
     renderStep(currentStep);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 }
 
@@ -74,7 +72,6 @@ function goToStep(stepIndex) {
     cleanupCurrentStep();
     currentStep = stepIndex;
     renderStep(currentStep);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 }
 
@@ -83,7 +80,6 @@ function resetWizard() {
   resetState();
   currentStep = 0;
   renderStep(currentStep);
-  window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
 function cleanupCurrentStep() {
@@ -148,6 +144,7 @@ async function renderStep(stepIndex) {
 
   contentEl.innerHTML = stepModule.render();
   currentModule = stepModule;
+  resetRenderedStepScroll(contentEl);
 
   requestAnimationFrame(() => {
     if (requestId !== renderRequestId) return;
@@ -180,6 +177,18 @@ function preloadLikelyNextStep(stepIndex) {
   const nextStep = steps[stepIndex + 1];
   if (!nextStep || nextStep.module) return;
   void loadStepModule(nextStep);
+}
+
+function resetRenderedStepScroll(contentEl) {
+  window.scrollTo(0, 0);
+  document.documentElement.scrollTop = 0;
+  document.body.scrollTop = 0;
+
+  if (!contentEl) return;
+
+  contentEl.scrollTop = 0;
+  contentEl.querySelector('.step-page')?.scrollTo(0, 0);
+  contentEl.querySelector('.step-body')?.scrollTo(0, 0);
 }
 
 function updateHeader(step) {

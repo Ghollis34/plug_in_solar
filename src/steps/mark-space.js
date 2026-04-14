@@ -226,6 +226,7 @@ export function init() {
 
       drawnSpaces = [...getSpacesState()];
       drawnObstacles = mapRuntime.normalizeObstacles(getObstaclesState());
+      drawnSpaces = refreshRestoredShedRoofSpaces(drawnSpaces);
       selectedSpaceId = getSelectedSpaceIdState() || drawnSpaces[0]?.id || null;
       spaceCounter = drawnSpaces.length;
       obstacleCounter = drawnObstacles.length;
@@ -477,6 +478,36 @@ function addSpace(lat, lng) {
   updateSpacesList();
   updateNextButton();
   return space;
+}
+
+function refreshRestoredShedRoofSpaces(spaces) {
+  return spaces.map((space) => {
+    if (space?.type !== 'flat-roof' || !Number.isFinite(space.centerLat) || !Number.isFinite(space.centerLng)) {
+      return space;
+    }
+
+    const shedAlignment = getNearestShedRoofAlignment(space.centerLat, space.centerLng);
+    if (!shedAlignment) {
+      return space;
+    }
+
+    const orientation = shedAlignment.orientation ?? space.orientation ?? 180;
+    const displayRotation = shedAlignment.displayRotation ?? orientation;
+
+    return {
+      ...space,
+      centerLat: shedAlignment.lat ?? space.centerLat,
+      centerLng: shedAlignment.lng ?? space.centerLng,
+      orientation,
+      displayRotation,
+      orientationLabel: `${degreesToCompass(orientation, 'long')} (${orientation}°)`,
+      alignmentHint: shedAlignment.hint || null,
+      surfaceAligned: shedAlignment.surfaceAligned === true,
+      mountHostType: shedAlignment.hostType || space.mountHostType || null,
+      mountHostId: shedAlignment.hostId || space.mountHostId || null,
+      mountHeightM: shedAlignment.hostHeightM ?? space.mountHeightM ?? 0,
+    };
+  });
 }
 
 function addFence(startPoint, endPoint) {
@@ -982,7 +1013,7 @@ function updateOrientationNote(typeId, recommendation) {
   }
 
   if (typeId === 'flat-roof') {
-    noteEl.textContent = `Click directly on a flat roof or saved shed top. If the spot lands on a shed roof, we treat it as mounted on top of the shed rather than shaded underneath it, and assume a typical pitched shed so we can recommend the sunnier roof face from the shed front direction.`;
+    noteEl.textContent = `Click directly on a flat roof or saved shed top. If the spot lands on a shed roof, we treat it as mounted on top of the shed rather than shaded underneath it, and assume a typical pitched shed so we can recommend the sunnier roof face from the shed footprint, with the longer sides treated as the pitch-down edges.`;
     return;
   }
 

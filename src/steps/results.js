@@ -2,6 +2,12 @@ import Chart from 'chart.js/auto';
 import kitsData from '../data/kits.json';
 import { getState, setState } from '../utils/state.js';
 import { fetchSolarData } from '../utils/pvgis.js';
+import {
+  findPricedKitById,
+  getKitPriceDetailLabel,
+  getKitPriceStatusLabel,
+  loadLivePricing,
+} from '../utils/kit-pricing.js';
 import { formatCurrency, formatPayback } from '../utils/roi.js';
 import config from '../data/config.json';
 import { escapeHtml, safeDataId, sanitizeExternalUrl } from '../utils/security.js';
@@ -152,14 +158,15 @@ export function init() {
 async function calculateResults() {
   const requestId = ++calculationRequestId;
   const location = getLocationState();
-  const selectedKit = resolveSelectedKit(getState('selectedKit'));
+  const selectedKitState = getState('selectedKit');
   const selectedSpace = getSelectedOrRecommendedSpace() || {};
   const recommendedSpace = getRecommendedSpace() || selectedSpace;
   const annualUsageKwh = getResolvedAnnualUsageKwh();
   const usingDefaultAnnualUsage = isUsingDefaultAnnualUsage();
   const pricing = getResolvedElectricityPricing();
+  const spaceType = selectedSpace?.type || null;
 
-  if (!location || !selectedKit) {
+  if (!location || !selectedKitState?.id) {
     showError('Missing location or kit selection.');
     return;
   }
@@ -169,8 +176,17 @@ async function calculateResults() {
     const pvgisAzimuth = orientation - 180;
     const tilt = selectedSpace.tilt || 35;
 
-    const solarData = await fetchSolarData(location.lat, location.lng, tilt, pvgisAzimuth);
+    const [solarData, livePricing] = await Promise.all([
+      fetchSolarData(location.lat, location.lng, tilt, pvgisAzimuth),
+      loadLivePricing(),
+    ]);
     if (requestId !== calculationRequestId) return;
+
+    const selectedKit = resolveSelectedKit(selectedKitState, livePricing, spaceType);
+    if (!selectedKit) {
+      showError('Missing location or kit selection.');
+      return;
+    }
 
     const baselineFactor = clamp(selectedSpace.shadowFactor ?? ((selectedSpace.avgDailyHours || 6) / 12), 0, 1);
     const conservativeFactor = clamp(
@@ -191,7 +207,7 @@ async function calculateResults() {
       annualUsageKwh,
       pricing,
     });
-    const batteryUpgradeKit = getBatteryUpgradeKit(selectedKit);
+    const batteryUpgradeKit = getBatteryUpgradeKit(selectedKit, livePricing, spaceType);
     const upgradeScenario = batteryUpgradeKit
       ? buildScenario(batteryUpgradeKit, solarData, {
         baselineFactor,
@@ -283,8 +299,8 @@ function displayResults({ primaryScenario, upgradeScenario, selectedSpace, recom
       ? `No household usage was entered, so this quote is using the UK typical household default of <strong>${formatWholeNumber(annualUsageKwh)} kWh/year</strong> from ${escapeHtml(DEFAULT_ANNUAL_USAGE_SOURCE)}. With full solar capture turned on, that mainly fine-tunes storage and smart-tariff assumptions.`
       : `This quote is using your estimated household electricity use of <strong>${formatWholeNumber(annualUsageKwh)} kWh/year</strong>. With full solar capture turned on, that mainly fine-tunes storage and smart-tariff assumptions rather than reducing value through unpaid spill.`)
     : (usingDefaultAnnualUsage
-      ? `No household usage was entered, so this quote is using the UK typical household default of <strong>${formatWholeNumber(annualUsageKwh)} kWh/year</strong> from ${escapeHtml(DEFAULT_ANNUAL_USAGE_SOURCE)}.`
-      : `This quote is using your estimated household electricity use of <strong>${formatWholeNumber(annualUsageKwh)} kWh/year</strong> to work out how much solar stays on-site versus spills away unused.`);
+      ? `No household usage was entered, so this quote is using the UK typical household default of <strong>${formatWholeNumber(annualUsageKwh)} kWh/year</strong> from ${escapeHtml(DEFAULT_ANNUAL_USAGE_SOURCE)}. The value model still leans toward a high daytime-occupancy home, so most generated solar is treated as being used on-site.`
+      : `This quote is using your estimated household electricity use of <strong>${formatWholeNumber(annualUsageKwh)} kWh/year</strong> to work out how much solar stays on-site versus spills away unused, with a high daytime-occupancy assumption keeping most generation in the home.`);
   const annualValueCopy = primaryFullCapture
     ? smartTariffIncluded
       ? `In the strongest case that could be worth about <strong>${formatCurrency(headlineValueModel.annualValue)}</strong> in year one, including
@@ -346,8 +362,13 @@ function displayResults({ primaryScenario, upgradeScenario, selectedSpace, recom
     : kit.hasBattery
     ? `The value model expects roughly ${primarySelfUsePercent}% of yearly solar generation to stay on-site with storage, using ${Math.round((config.batteryRoundTripEfficiency ?? 0.9) * 100)}% round-trip battery efficiency${smartTariffIncluded ? ` and about ${formatWholeNumber(headlineValueModel.smartTariffShiftKwh)} kWh/year of low-rate charging shifted into higher-value periods` : ''}.`
     : upgradeScenario
-      ? `The value model expects roughly ${primarySelfUsePercent}% of yearly generation to stay on-site for this solar-only setup, rising to about ${upgradeSelfUsePercent}% with the matched battery bundle${upgradeFullCapture ? ' under the battery full-capture assumption' : ''}${smartTariffGain > 0 ? ` plus about ${formatCurrency(smartTariffGain)} of extra smart-tariff battery value` : ''}.`
-      : `The value model expects roughly ${primarySelfUsePercent}% of yearly generation to stay on-site for this household usage.`;
+      ? `The value model expects roughly ${primarySelfUsePercent}% of yearly generation to stay on-site for this solar-only setup under a high daytime-occupancy assumption, rising to about ${upgradeSelfUsePercent}% with the matched battery bundle${upgradeFullCapture ? ' under the battery full-capture assumption' : ''}${smartTariffGain > 0 ? ` plus about ${formatCurrency(smartTariffGain)} of extra smart-tariff battery value` : ''}.`
+      : `The value model expects roughly ${primarySelfUsePercent}% of yearly generation to stay on-site for this household usage under a high daytime-occupancy assumption.`;
+  const annualValueGrowthCopy = (config.annualValueGrowthRate ?? 0) > 0
+    ? `Payback and long-term return also assume saved electricity value rises by about ${Math.round((config.annualValueGrowthRate ?? 0) * 100)}% per year from ${escapeHtml(config.annualValueGrowthSource || 'the quote model')}.`
+    : '';
+  const kitPriceStatus = getKitPriceStatusLabel(kit.priceMeta);
+  const kitPriceDetail = getKitPriceDetailLabel(kit.priceMeta);
   const firstYearValueRange = formatCurrencyRange(conservativeValueModel.annualValue, optimisticValueModel.annualValue);
   const paybackRange = formatPaybackRange(conservativeRoi.paybackYears, optimisticRoi.paybackYears);
   const netReturnRange = formatCurrencyRange(conservativeRoi.netReturn25yr, optimisticRoi.netReturn25yr);
@@ -381,7 +402,8 @@ function displayResults({ primaryScenario, upgradeScenario, selectedSpace, recom
           ${annualValueCopy}
         </p>
         <div class="analysis-note" style="margin-bottom: 14px;">${usageContextCopy}</div>
-        <div class="analysis-note" style="margin-bottom: 14px;">Headline numbers on this screen show the upper-end modelled outcome. Smaller text underneath keeps the wider range visible.</div>
+        <div class="analysis-note" style="margin-bottom: 14px;">Direct-sun scores are a shading signal, not a straight energy conversion. Year-one kWh still depends on the selected facing and tilt as well as the shade model.</div>
+        <div class="analysis-note" style="margin-bottom: 14px;">Kit cost in this quote is <strong>${formatCurrency(headlineRoi.kitCost)}</strong>. ${escapeHtml(kitPriceStatus)}. ${escapeHtml(kitPriceDetail)}</div>
         <div class="badge-row" style="margin: 14px 0 10px;">
           <span class="info-badge">${kit.hasBattery ? 'Battery combo selected' : 'Solar-only kit selected'}</span>
           <span class="info-badge">Confidence: ${safeConfidence}</span>
@@ -420,7 +442,7 @@ function displayResults({ primaryScenario, upgradeScenario, selectedSpace, recom
       <div class="result-value success">${formatPayback(headlineRoi.paybackYears)}</div>
       <div class="result-label">Fastest Modelled Payback</div>
       <div class="result-range-note">Modelled range: ${paybackRange}</div>
-      <div class="result-sublabel">Upfront cost: ${formatCurrency(headlineRoi.kitCost)}</div>
+      <div class="result-sublabel">Upfront cost: ${formatCurrency(headlineRoi.kitCost)} · ${escapeHtml(kitPriceStatus)}</div>
     </div>
     <div class="card result-card">
       <div class="result-icon">📈</div>
@@ -472,8 +494,8 @@ function displayResults({ primaryScenario, upgradeScenario, selectedSpace, recom
       ? ''
       : 'This plug-in solar quote assumes excess electricity sent to the grid is unpaid.';
   document.getElementById('price-disclaimer').textContent = exportPaymentEnabled
-    ? `Based on ${pricing.sourceDetail}. The quote is currently using ${formatRatePence(pricing.unitRatePence)}${config.electricityPriceUnit}${pricing.standingChargePence != null ? `, with a regional standing charge reference of ${formatRatePence(pricing.standingChargePence)}p/day shown for context only.` : ''} Household usage is set to ${formatWholeNumber(annualUsageKwh)} kWh/year${usingDefaultAnnualUsage ? ` using the UK typical default from ${DEFAULT_ANNUAL_USAGE_SOURCE}` : ''}. Headline tiles show the best-case modelled outcome and smaller text shows the wider range.${spillDisclaimerCopy ? ` ${spillDisclaimerCopy}` : ''}${smartTariffIncluded ? ` Smart-tariff battery shifting is estimated using ${config.smartTariffOffPeakPrice}${config.smartTariffOffPeakPriceUnit} overnight import from ${config.smartTariffSource}.` : ''} ${storageAssumptionCopy}`
-    : `Based on ${pricing.sourceDetail}. The quote is currently using ${formatRatePence(pricing.unitRatePence)}${config.electricityPriceUnit}${pricing.standingChargePence != null ? `, with a regional standing charge reference of ${formatRatePence(pricing.standingChargePence)}p/day shown for context only.` : ''} Household usage is set to ${formatWholeNumber(annualUsageKwh)} kWh/year${usingDefaultAnnualUsage ? ` using the UK typical default from ${DEFAULT_ANNUAL_USAGE_SOURCE}` : ''}. Headline tiles show the best-case modelled outcome and smaller text shows the wider range. ${spillDisclaimerCopy}${smartTariffIncluded ? ` Smart-tariff battery shifting is estimated using ${config.smartTariffOffPeakPrice}${config.smartTariffOffPeakPriceUnit} overnight import from ${config.smartTariffSource}.` : ''} ${storageAssumptionCopy}`;
+    ? `Based on ${pricing.sourceDetail}. The quote is currently using ${formatRatePence(pricing.unitRatePence)}${config.electricityPriceUnit}${pricing.standingChargePence != null ? `, with a regional standing charge reference of ${formatRatePence(pricing.standingChargePence)}p/day shown for context only.` : ''} Household usage is set to ${formatWholeNumber(annualUsageKwh)} kWh/year${usingDefaultAnnualUsage ? ` using the UK typical default from ${DEFAULT_ANNUAL_USAGE_SOURCE}` : ''}. Kit cost is ${formatCurrency(headlineRoi.kitCost)} from ${kitPriceStatus.toLowerCase()}. ${kitPriceDetail} Headline tiles show the best-case modelled outcome and smaller text shows the wider range.${spillDisclaimerCopy ? ` ${spillDisclaimerCopy}` : ''}${smartTariffIncluded ? ` Smart-tariff battery shifting is estimated using ${config.smartTariffOffPeakPrice}${config.smartTariffOffPeakPriceUnit} overnight import from ${config.smartTariffSource}.` : ''} ${storageAssumptionCopy}${annualValueGrowthCopy ? ` ${annualValueGrowthCopy}` : ''}`
+    : `Based on ${pricing.sourceDetail}. The quote is currently using ${formatRatePence(pricing.unitRatePence)}${config.electricityPriceUnit}${pricing.standingChargePence != null ? `, with a regional standing charge reference of ${formatRatePence(pricing.standingChargePence)}p/day shown for context only.` : ''} Household usage is set to ${formatWholeNumber(annualUsageKwh)} kWh/year${usingDefaultAnnualUsage ? ` using the UK typical default from ${DEFAULT_ANNUAL_USAGE_SOURCE}` : ''}. Kit cost is ${formatCurrency(headlineRoi.kitCost)} from ${kitPriceStatus.toLowerCase()}. ${kitPriceDetail} Headline tiles show the best-case modelled outcome and smaller text shows the wider range. ${spillDisclaimerCopy}${smartTariffIncluded ? ` Smart-tariff battery shifting is estimated using ${config.smartTariffOffPeakPrice}${config.smartTariffOffPeakPriceUnit} overnight import from ${config.smartTariffSource}.` : ''} ${storageAssumptionCopy}${annualValueGrowthCopy ? ` ${annualValueGrowthCopy}` : ''}`;
 
   updateAssumptionUi();
 }
@@ -964,19 +986,22 @@ function getElectricityPricePillText(pricing, usingCustomElectricityPrice) {
   return 'GB average active';
 }
 
-function getBatteryUpgradeKit(selectedKit) {
+function getBatteryUpgradeKit(selectedKit, livePricing = null, spaceType = null) {
   if (!selectedKit || selectedKit.hasBattery) return null;
 
-  return kitsData.find((kit) => (
+  const upgradeKit = kitsData.find((kit) => (
     kit.hasBattery
     && kit.brand === selectedKit.brand
     && kit.wattage === selectedKit.wattage
   )) || null;
+
+  return upgradeKit
+    ? findPricedKitById(upgradeKit.id, livePricing, { spaceType })
+    : null;
 }
 
-function resolveSelectedKit(selectedKit) {
-  if (!selectedKit?.id) return null;
-  return kitsData.find((kit) => kit.id === selectedKit.id) || null;
+function resolveSelectedKit(selectedKit, livePricing = null, spaceType = null) {
+  return findPricedKitById(selectedKit, livePricing, { spaceType });
 }
 
 function animateCounters() {
