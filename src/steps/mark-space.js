@@ -1,5 +1,14 @@
 import { setState } from '../utils/state.js';
-import { degreesToCompass, getBearingBetweenPoints, getRectangleRing, latLngToMeters, metersToLatLng, normalizeDegrees } from '../utils/geometry.js';
+import {
+  degreesToCompass,
+  distancePointToSegment,
+  getBearingBetweenPoints,
+  getRectangleRing,
+  latLngToMeters,
+  metersToLatLng,
+  normalizeDegrees,
+  pointInPolygon,
+} from '../utils/geometry.js';
 import { getMapLightFromSun, samplePlacementHeatmap } from '../utils/sun.js';
 import { escapeHtml } from '../utils/security.js';
 import { getSpaceTypeInfo, OBSTACLE_TOOLS, SPACE_TYPES } from '../utils/site-config.js';
@@ -7,6 +16,7 @@ import { createMapStepSession } from '../utils/map-step-session.js';
 import { renderObstacleList } from '../utils/obstacle-list.js';
 import { rotateShedById } from '../utils/site-obstacle-state.js';
 import { getShedRotationValue, setShedRotationValue, syncShedRotationUI } from '../utils/shed-rotation.js';
+import { getShedRoofPlacementGuidance } from '../utils/shed-roof.js';
 import { getAnnualSolarRecommendation } from '../utils/solar-placement.js';
 import {
   getBuildingsState,
@@ -42,6 +52,7 @@ const mapSession = createMapStepSession();
 
 const SURFACE_SNAP_DISTANCE_M = 6;
 const WALL_SNAP_DISTANCE_M = 5;
+const FLAT_ROOF_SNAP_DISTANCE_M = 1.5;
 const PANEL_SNAP_OFFSET_M = 0.8;
 const HEATMAP_RADIUS_M = 16;
 const HEATMAP_PRIMARY_STEP_M = 2.5;
@@ -452,6 +463,9 @@ function addSpace(lat, lng) {
     orientationLabel: `${degreesToCompass(orientation, 'long')} (${orientation}°)`,
     alignmentHint: surfaceAlignment?.hint || null,
     surfaceAligned: surfaceAlignment?.surfaceAligned === true,
+    mountHostType: surfaceAlignment?.hostType || null,
+    mountHostId: surfaceAlignment?.hostId || null,
+    mountHeightM: surfaceAlignment?.hostHeightM ?? 0,
   };
 
   drawnSpaces.push(space);
@@ -967,6 +981,11 @@ function updateOrientationNote(typeId, recommendation) {
     return;
   }
 
+  if (typeId === 'flat-roof') {
+    noteEl.textContent = `Click directly on a flat roof or saved shed top. If the spot lands on a shed roof, we treat it as mounted on top of the shed rather than shaded underneath it, and assume a typical pitched shed so we can recommend the sunnier roof face from the shed front direction.`;
+    return;
+  }
+
   noteEl.textContent = `Prefilled for this site: ${degreesToCompass(recommendation.orientation, 'long')} (${recommendation.orientation}°) for the strongest year-round exposure. You can still override it.`;
 }
 
@@ -981,6 +1000,11 @@ function updateTiltNote(typeId, recommendation) {
 
   if (typeId === 'wall') {
     noteEl.textContent = `Annual tilt target here is about ${recommendation.tilt}°. Leave it if you are using an angled wall bracket, or adjust it for a more upright mount.`;
+    return;
+  }
+
+  if (typeId === 'flat-roof') {
+    noteEl.textContent = `Use the roof-frame angle if the panels sit on brackets, or set it lower if they lie closer to the shed or flat roof surface.`;
     return;
   }
 
@@ -1236,7 +1260,102 @@ function resolveSurfaceAlignment(typeId, lat, lng) {
     return getNearestWallAlignment(lat, lng);
   }
 
+  if (typeId === 'flat-roof') {
+    return getNearestFlatRoofAlignment(lat, lng);
+  }
+
   return null;
+}
+
+function getNearestFlatRoofAlignment(lat, lng) {
+  const shedAlignment = getNearestShedRoofAlignment(lat, lng);
+  if (shedAlignment) {
+    return shedAlignment;
+  }
+
+  const footprint = getPrimaryBuildingFootprint();
+  if (footprint.length >= 3) {
+    const buildingPolygon = footprint.map((point) => {
+      const projected = latLngToMeters(lat, lng, point.lat, point.lng);
+      return { x: projected.dx, y: projected.dy };
+    });
+
+    if (pointInPolygon({ x: 0, y: 0 }, buildingPolygon)) {
+      return {
+        distanceM: 0,
+        lat,
+        lng,
+        hint: 'Placed on building roof area',
+        surfaceType: 'flat-roof',
+        surfaceAligned: true,
+        hostType: 'building',
+        hostId: getPrimaryBuilding()?.id || 'user-building',
+        hostHeightM: getPrimaryBuilding()?.height ?? 0,
+      };
+    }
+  }
+
+  return null;
+}
+
+function getNearestShedRoofAlignment(lat, lng) {
+  const sheds = drawnObstacles.filter((obstacle) => (
+    obstacle.type === 'shed'
+    && Number.isFinite(obstacle.lat)
+    && Number.isFinite(obstacle.lng)
+  ));
+
+  if (!sheds.length) {
+    return null;
+  }
+
+  const scored = sheds.map((obstacle) => {
+    const polygon = getRectangleRing(
+      obstacle.lat,
+      obstacle.lng,
+      obstacle.widthM || 3,
+      obstacle.depthM || 2,
+      obstacle.rotationDeg || 0
+    )
+      .slice(0, -1)
+      .map((point) => {
+        const projected = latLngToMeters(lat, lng, point.lat, point.lng);
+        return { x: projected.dx, y: projected.dy };
+      });
+
+    const inside = pointInPolygon({ x: 0, y: 0 }, polygon);
+
+    return {
+      obstacle,
+      distanceM: inside ? 0 : getPolygonEdgeDistance({ x: 0, y: 0 }, polygon),
+    };
+  }).sort((a, b) => a.distanceM - b.distanceM);
+
+  const nearest = scored[0];
+  if (!nearest || nearest.distanceM > FLAT_ROOF_SNAP_DISTANCE_M) {
+    return null;
+  }
+
+  const roofGuidance = getShedRoofPlacementGuidance(
+    nearest.obstacle,
+    lat,
+    lng,
+    getLocationState()?.lat ?? null
+  );
+
+  return {
+    distanceM: nearest.distanceM,
+    lat,
+    lng,
+    orientation: roofGuidance.orientation,
+    displayRotation: roofGuidance.displayRotation,
+    hint: roofGuidance.hint,
+    surfaceType: 'shed-roof',
+    surfaceAligned: true,
+    hostType: 'shed',
+    hostId: nearest.obstacle.id,
+    hostHeightM: nearest.obstacle.heightM || 0,
+  };
 }
 
 function getNearestWallAlignment(lat, lng) {
@@ -1321,6 +1440,22 @@ function projectToSegmentMeters(lat, lng, start, end) {
     cross: (endMeters.dx * pointMeters.dy) - (endMeters.dy * pointMeters.dx),
     start,
   };
+}
+
+function getPolygonEdgeDistance(point, polygon) {
+  if (!Array.isArray(polygon) || polygon.length < 2) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  let minDistance = Number.POSITIVE_INFINITY;
+
+  for (let index = 0; index < polygon.length; index += 1) {
+    const start = polygon[index];
+    const end = polygon[(index + 1) % polygon.length];
+    minDistance = Math.min(minDistance, distancePointToSegment(point, start, end));
+  }
+
+  return minDistance;
 }
 
 function resolveFacingBearing(baseBearing, projection, origin, options = {}) {

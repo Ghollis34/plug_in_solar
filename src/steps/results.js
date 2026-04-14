@@ -1,42 +1,45 @@
 import Chart from 'chart.js/auto';
 import kitsData from '../data/kits.json';
 import { getState, setState } from '../utils/state.js';
-import { fetchSolarData, adjustForShadows } from '../utils/pvgis.js';
-import { calculateROI, formatCurrency, formatPayback } from '../utils/roi.js';
+import { fetchSolarData } from '../utils/pvgis.js';
+import { formatCurrency, formatPayback } from '../utils/roi.js';
 import config from '../data/config.json';
 import { escapeHtml, safeDataId, sanitizeExternalUrl } from '../utils/security.js';
+import { normalizeCustomUnitRatePence } from '../utils/electricity-pricing.js';
+import { ALLOWED_RETAILER_HOSTS, resolveRetailerLink } from '../utils/referrals.js';
+import { buildScenario, hasExportPayment, usesFullSolarCapture } from '../utils/quote-model.js';
 import {
   DEFAULT_ANNUAL_USAGE_KWH,
   DEFAULT_ANNUAL_USAGE_SOURCE,
   getAnnualUsageInput,
+  getElectricityPriceInput,
   getLocationState,
+  getResolvedElectricityPricing,
   getRecommendedSpace,
   getResolvedAnnualUsageKwh,
   getSelectedOrRecommendedSpace,
+  isUsingCustomElectricityPrice,
   isUsingDefaultAnnualUsage,
 } from '../utils/site-state.js';
 
 let charts = [];
 let calculationRequestId = 0;
-const ALLOWED_RETAILER_HOSTS = [
-  'uk.ecoflow.com',
-  'thunderenergy.co.uk',
-  'zendure.com',
-  'www.anker.com',
-  'anker.com',
-];
 
 export function render() {
+  const selectedKit = resolveSelectedKit(getState('selectedKit'));
   const annualUsageInput = getAnnualUsageInput();
   const resolvedAnnualUsage = getResolvedAnnualUsageKwh();
   const usingDefaultAnnualUsage = isUsingDefaultAnnualUsage();
+  const electricityPriceInput = getElectricityPriceInput();
+  const resolvedPricing = getResolvedElectricityPricing();
+  const usingCustomElectricityPrice = isUsingCustomElectricityPrice();
 
   return `
     <div class="step-page scrollable">
       <div class="step-header">
         <div class="section-kicker">Step 6 · Results</div>
         <h2 class="step-title">Your Solar Blueprint</h2>
-        <p class="step-subtitle">See the likely generation, value, lost spill profile, and whether a battery upgrade is worth pricing.</p>
+        <p class="step-subtitle">See the likely generation, value, payback, and whether a battery upgrade is worth pricing.</p>
       </div>
 
       <div class="step-body">
@@ -63,12 +66,37 @@ export function render() {
                     <input type="number" class="form-input" id="annual-usage-input" min="100" max="100000" step="50" value="${annualUsageInput ?? ''}" placeholder="${DEFAULT_ANNUAL_USAGE_KWH}" />
                     <button class="btn btn-outline" id="btn-apply-usage" type="button">Update Quote</button>
                   </div>
-                  <div class="analysis-note" id="annual-usage-helper">${getAnnualUsageHelperText(usingDefaultAnnualUsage, resolvedAnnualUsage)}</div>
+                  <div class="analysis-note" id="annual-usage-helper">${getAnnualUsageHelperText(usingDefaultAnnualUsage, resolvedAnnualUsage, selectedKit)}</div>
                 </div>
                 <div class="results-usage-summary">
                   <div class="results-usage-summary-label" id="annual-usage-source">${usingDefaultAnnualUsage ? DEFAULT_ANNUAL_USAGE_SOURCE : 'Using your household estimate'}</div>
                   <div class="results-usage-summary-value" id="annual-usage-effective">${formatWholeNumber(resolvedAnnualUsage)} kWh/year</div>
                   <button class="btn btn-secondary" id="btn-use-average-usage" type="button">Use UK Average</button>
+                </div>
+              </div>
+            </div>
+            <div class="card-flat results-usage-card">
+              <div class="results-usage-header">
+                <div>
+                  <div class="results-kicker">Electricity tariff assumption</div>
+                  <h3 class="results-usage-title">Estimated import unit rate</h3>
+                </div>
+                <div class="map-panel-pill" id="electricity-price-pill">${escapeHtml(getElectricityPricePillText(resolvedPricing, usingCustomElectricityPrice))}</div>
+              </div>
+              <div class="results-usage-grid">
+                <div>
+                  <label class="form-label" for="electricity-price-input">Electricity price (p/kWh)</label>
+                  <div class="results-usage-input-row">
+                    <input type="number" class="form-input" id="electricity-price-input" min="1" max="100" step="0.01" value="${electricityPriceInput ?? ''}" placeholder="${resolvedPricing.unitRatePence}" />
+                    <button class="btn btn-outline" id="btn-apply-electricity-price" type="button">Update Quote</button>
+                  </div>
+                  <div class="analysis-note" id="electricity-price-helper">${escapeHtml(getElectricityPriceHelperText(resolvedPricing, usingCustomElectricityPrice))}</div>
+                </div>
+                <div class="results-usage-summary">
+                  <div class="results-usage-summary-label" id="electricity-price-source">${escapeHtml(resolvedPricing.source)}</div>
+                  <div class="results-usage-summary-value" id="electricity-price-effective">${formatRatePence(resolvedPricing.unitRatePence)} p/kWh</div>
+                  <div class="results-usage-summary-detail" id="electricity-price-detail">${escapeHtml(getElectricityPriceDetailText(resolvedPricing))}</div>
+                  <button class="btn btn-secondary" id="btn-use-smart-price" type="button">Use Postcode Default</button>
                 </div>
               </div>
             </div>
@@ -116,8 +144,8 @@ export function init() {
     window.dispatchEvent(new CustomEvent('wizard:reset'));
   });
 
-  initUsageControls();
-  updateUsageAssumptionUi();
+  initAssumptionControls();
+  updateAssumptionUi();
   calculateResults();
 }
 
@@ -129,6 +157,7 @@ async function calculateResults() {
   const recommendedSpace = getRecommendedSpace() || selectedSpace;
   const annualUsageKwh = getResolvedAnnualUsageKwh();
   const usingDefaultAnnualUsage = isUsingDefaultAnnualUsage();
+  const pricing = getResolvedElectricityPricing();
 
   if (!location || !selectedKit) {
     showError('Missing location or kit selection.');
@@ -144,13 +173,33 @@ async function calculateResults() {
     if (requestId !== calculationRequestId) return;
 
     const baselineFactor = clamp(selectedSpace.shadowFactor ?? ((selectedSpace.avgDailyHours || 6) / 12), 0, 1);
-    const conservativeFactor = clamp(selectedSpace.conservativeFactor ?? (baselineFactor - 0.14), 0, 1);
-    const optimisticFactor = clamp(selectedSpace.optimisticFactor ?? (baselineFactor + 0.14), 0, 1);
+    const conservativeFactor = clamp(
+      selectedSpace.conservativeFactor ?? (baselineFactor - (config.resultsConservativeShadowDelta ?? 0.1)),
+      0,
+      1
+    );
+    const optimisticFactor = clamp(
+      selectedSpace.optimisticFactor ?? (baselineFactor + (config.resultsOptimisticShadowDelta ?? 0.2)),
+      0,
+      1
+    );
 
-    const primaryScenario = buildScenario(selectedKit, solarData, baselineFactor, conservativeFactor, optimisticFactor, annualUsageKwh);
+    const primaryScenario = buildScenario(selectedKit, solarData, {
+      baselineFactor,
+      conservativeFactor,
+      optimisticFactor,
+      annualUsageKwh,
+      pricing,
+    });
     const batteryUpgradeKit = getBatteryUpgradeKit(selectedKit);
     const upgradeScenario = batteryUpgradeKit
-      ? buildScenario(batteryUpgradeKit, solarData, baselineFactor, conservativeFactor, optimisticFactor, annualUsageKwh)
+      ? buildScenario(batteryUpgradeKit, solarData, {
+        baselineFactor,
+        conservativeFactor,
+        optimisticFactor,
+        annualUsageKwh,
+        pricing,
+      })
       : null;
 
     setState({
@@ -164,6 +213,9 @@ async function calculateResults() {
         selfUsedKwh: primaryScenario.valueModel.selfUsedKwh,
         exportKwh: primaryScenario.valueModel.exportKwh,
         paybackYears: primaryScenario.roi.paybackYears,
+        electricityPricePence: pricing.unitRatePence,
+        electricityPriceMode: pricing.mode,
+        electricityRegion: pricing.region,
         upgradeKitId: upgradeScenario?.kit.id || null,
       },
     });
@@ -177,6 +229,7 @@ async function calculateResults() {
       solarData,
       annualUsageKwh,
       usingDefaultAnnualUsage,
+      pricing,
     });
   } catch (error) {
     if (requestId !== calculationRequestId) return;
@@ -185,30 +238,24 @@ async function calculateResults() {
   }
 }
 
-function buildScenario(kit, solarData, baselineFactor, conservativeFactor, optimisticFactor, annualUsageKwh) {
-  const adjusted = adjustForShadows(solarData, baselineFactor, kit.wattage);
-  const conservativeAdjusted = adjustForShadows(solarData, conservativeFactor, kit.wattage);
-  const optimisticAdjusted = adjustForShadows(solarData, optimisticFactor, kit.wattage);
-  const valueModel = estimateEnergyValue(adjusted.annualKwh, kit, annualUsageKwh);
-  const roi = calculateROI({
-    kitCost: kit.price,
-    annualKwh: adjusted.annualKwh,
-    annualValuePerKwh: valueModel.effectiveValuePerKwh,
-    warrantyYears: kit.warrantyYears,
-  });
-
-  return {
+function displayResults({ primaryScenario, upgradeScenario, selectedSpace, recommendedSpace, solarData, annualUsageKwh, usingDefaultAnnualUsage, pricing }) {
+  const {
     kit,
+    roi,
     adjusted,
     conservativeAdjusted,
     optimisticAdjusted,
     valueModel,
-    roi,
-  };
-}
-
-function displayResults({ primaryScenario, upgradeScenario, selectedSpace, recommendedSpace, solarData, annualUsageKwh, usingDefaultAnnualUsage }) {
-  const { kit, roi, adjusted, conservativeAdjusted, optimisticAdjusted, valueModel } = primaryScenario;
+    conservativeValueModel,
+    optimisticValueModel,
+    conservativeRoi,
+    optimisticRoi,
+  } = primaryScenario;
+  const primaryFullCapture = usesFullSolarCapture(kit);
+  const upgradeFullCapture = usesFullSolarCapture(upgradeScenario?.kit);
+  const headlineAdjusted = optimisticAdjusted;
+  const headlineValueModel = optimisticValueModel;
+  const headlineRoi = optimisticRoi;
   const exportPaymentEnabled = hasExportPayment();
   const safeKitName = escapeHtml(kit.name);
   const safeSelectedSpaceName = escapeHtml(selectedSpace.name || 'your selected spot');
@@ -216,42 +263,108 @@ function displayResults({ primaryScenario, upgradeScenario, selectedSpace, recom
   const safeConfidence = escapeHtml(capitalise(selectedSpace.confidence || 'medium'));
   const safeRelativeDirection = escapeHtml(selectedSpace.relativeDirectionLabel || 'Position estimated');
   const annualValueGain = upgradeScenario
-    ? Math.max(0, upgradeScenario.valueModel.annualValue - valueModel.annualValue)
+    ? Math.max(0, upgradeScenario.optimisticValueModel.annualValue - headlineValueModel.annualValue)
+    : 0;
+  const smartTariffIncluded = headlineValueModel.smartTariffSavings > 0;
+  const smartTariffGain = upgradeScenario
+    ? Math.max(0, upgradeScenario.optimisticValueModel.smartTariffSavings - headlineValueModel.smartTariffSavings)
     : 0;
   const warningsHtml = (selectedSpace.warnings || [])
     .map((warning) => `<div style="font-size: 0.82rem; color: var(--text-secondary);">${escapeHtml(warning)}</div>`)
     .join('');
+  const batterySpillNote = !primaryFullCapture && kit.hasBattery && valueModel.exportKwh > 0
+    ? `<div class="analysis-note" style="margin: 10px 0 0;">A little remaining solar spill is normal even with a battery. On brighter, lower-load periods the battery is already charging or full, so some midday generation can still pass through.</div>`
+    : '';
   const selectionNote = selectedSpace.id && recommendedSpace.id && selectedSpace.id !== recommendedSpace.id
     ? `<div style="font-size: 0.82rem; color: var(--text-secondary); margin-top: 8px;">This quote is using <strong>${safeSelectedSpaceName}</strong>. The model still ranks <strong>${safeRecommendedSpaceName}</strong> as the strongest sun location.</div>`
     : '';
-  const usageContextCopy = usingDefaultAnnualUsage
-    ? `No household usage was entered, so this quote is using the UK typical household default of <strong>${formatWholeNumber(annualUsageKwh)} kWh/year</strong> from ${escapeHtml(DEFAULT_ANNUAL_USAGE_SOURCE)}.`
-    : `This quote is using your estimated household electricity use of <strong>${formatWholeNumber(annualUsageKwh)} kWh/year</strong> to work out how much solar stays on-site versus spills away unused.`;
-  const annualValueCopy = exportPaymentEnabled
-    ? `That is worth about <strong>${formatCurrency(valueModel.annualValue)}</strong> in year one, split between
-      <strong>${formatCurrency(valueModel.billSavings)}</strong> of avoided grid spend and
-      <strong>${formatCurrency(valueModel.exportIncome)}</strong> of export income.`
-    : upgradeScenario && !kit.hasBattery
-      ? `That is worth about <strong>${formatCurrency(valueModel.annualValue)}</strong> in year one from avoided grid spend.
+  const usageContextCopy = primaryFullCapture
+    ? (usingDefaultAnnualUsage
+      ? `No household usage was entered, so this quote is using the UK typical household default of <strong>${formatWholeNumber(annualUsageKwh)} kWh/year</strong> from ${escapeHtml(DEFAULT_ANNUAL_USAGE_SOURCE)}. With full solar capture turned on, that mainly fine-tunes storage and smart-tariff assumptions.`
+      : `This quote is using your estimated household electricity use of <strong>${formatWholeNumber(annualUsageKwh)} kWh/year</strong>. With full solar capture turned on, that mainly fine-tunes storage and smart-tariff assumptions rather than reducing value through unpaid spill.`)
+    : (usingDefaultAnnualUsage
+      ? `No household usage was entered, so this quote is using the UK typical household default of <strong>${formatWholeNumber(annualUsageKwh)} kWh/year</strong> from ${escapeHtml(DEFAULT_ANNUAL_USAGE_SOURCE)}.`
+      : `This quote is using your estimated household electricity use of <strong>${formatWholeNumber(annualUsageKwh)} kWh/year</strong> to work out how much solar stays on-site versus spills away unused.`);
+  const annualValueCopy = primaryFullCapture
+    ? smartTariffIncluded
+      ? `In the strongest case that could be worth about <strong>${formatCurrency(headlineValueModel.annualValue)}</strong> in year one, including
+      <strong>${formatCurrency(headlineValueModel.billSavings)}</strong> of captured solar bill reduction and
+      <strong>${formatCurrency(headlineValueModel.smartTariffSavings)}</strong> from low-rate charging and peak-time battery discharge on a smart tariff.
+      This quote assumes no unpaid solar spill.`
+      : `In the strongest case that could be worth about <strong>${formatCurrency(headlineValueModel.annualValue)}</strong> in year one from captured solar bill reduction.
+      This quote assumes all modelled solar generation is captured at your import unit rate, with no unpaid spill.`
+    : smartTariffIncluded
+    ? `In the strongest case that could be worth about <strong>${formatCurrency(headlineValueModel.annualValue)}</strong> in year one, including
+      <strong>${formatCurrency(headlineValueModel.billSavings)}</strong> of solar bill reduction and
+      <strong>${formatCurrency(headlineValueModel.smartTariffSavings)}</strong> from low-rate charging and peak-time battery discharge on a smart tariff.
+      ${exportPaymentEnabled ? `It also includes <strong>${formatCurrency(headlineValueModel.exportIncome)}</strong> of export income.` : 'Any excess solar sent back to the grid is still treated as unpaid in this quote.'}`
+    : exportPaymentEnabled
+      ? `In the strongest case that could be worth about <strong>${formatCurrency(headlineValueModel.annualValue)}</strong> in year one, split between
+      <strong>${formatCurrency(headlineValueModel.billSavings)}</strong> of avoided grid spend and
+      <strong>${formatCurrency(headlineValueModel.exportIncome)}</strong> of export income.`
+      : upgradeScenario && !kit.hasBattery
+      ? `In the strongest case that could be worth about <strong>${formatCurrency(headlineValueModel.annualValue)}</strong> in year one from avoided grid spend.
       Without a battery, any excess sent back to the grid is lost value in this quote, and the matched battery could recover about
-      <strong>${formatCurrency(annualValueGain)}</strong> of that in year one.`
-      : `That is worth about <strong>${formatCurrency(valueModel.annualValue)}</strong> in year one from avoided grid spend.
+      <strong>${formatCurrency(annualValueGain)}</strong> of that in year one${smartTariffGain > 0 ? `, including about <strong>${formatCurrency(smartTariffGain)}</strong> from smart-tariff charging and discharge` : ''}.`
+      : `In the strongest case that could be worth about <strong>${formatCurrency(headlineValueModel.annualValue)}</strong> in year one from avoided grid spend.
       This plug-in solar quote assumes any excess sent back to the grid is unpaid.`;
-  const valueBreakdownCopy = exportPaymentEnabled
-    ? `${formatCurrency(valueModel.billSavings)} saved + ${formatCurrency(valueModel.exportIncome)} exported`
+  const valueBreakdownCopy = primaryFullCapture
+    ? smartTariffIncluded
+      ? `${formatCurrency(headlineValueModel.billSavings)} captured solar value + ${formatCurrency(headlineValueModel.smartTariffSavings)} smart-tariff shifting`
+      : `${formatCurrency(headlineValueModel.billSavings)} captured at the selected unit rate`
+    : smartTariffIncluded
+    ? `${formatCurrency(headlineValueModel.billSavings)} solar use + ${formatCurrency(headlineValueModel.smartTariffSavings)} smart-tariff shifting`
+    : exportPaymentEnabled
+    ? `${formatCurrency(headlineValueModel.billSavings)} saved + ${formatCurrency(headlineValueModel.exportIncome)} exported`
     : upgradeScenario && !kit.hasBattery
-      ? `${formatCurrency(valueModel.billSavings)} bill reduction + up to ${formatCurrency(annualValueGain)} recoverable with storage`
-      : `${formatCurrency(valueModel.billSavings)} bill reduction at current self-use assumptions`;
-  const gridSpillLabel = exportPaymentEnabled
+      ? `${formatCurrency(headlineValueModel.billSavings)} bill reduction + up to ${formatCurrency(annualValueGain)} recoverable with storage`
+      : `${formatCurrency(headlineValueModel.billSavings)} bill reduction at this household usage`;
+  const gridSpillLabel = primaryFullCapture
+    ? 'Solar Capture Assumed'
+    : exportPaymentEnabled
     ? 'Exported To Grid'
+    : kit.hasBattery
+      ? 'Remaining Solar Spill'
     : upgradeScenario && !kit.hasBattery
       ? 'Lost Value Without Battery'
       : 'Sent To Grid';
-  const gridSpillCopy = exportPaymentEnabled
-    ? `${formatCurrency(valueModel.exportIncome)} year-one export value`
+  const gridSpillCopy = primaryFullCapture
+    ? 'All generation is treated as captured value in this quote.'
+    : exportPaymentEnabled
+    ? `${formatCurrency(headlineValueModel.exportIncome)} best-case year-one export value`
+    : kit.hasBattery
+      ? 'A small amount can still spill on bright, low-load periods even with storage'
     : upgradeScenario && !kit.hasBattery
-      ? `${formatCurrency(annualValueGain)} year-one value could be recovered with a battery`
+      ? `${formatCurrency(annualValueGain)} year-one value could be recovered with a battery${smartTariffGain > 0 ? ` and smart-tariff shifting` : ''}`
       : 'Assumed £0 export payment in this plug-in solar quote';
+  const primarySelfUsePercent = Math.round(headlineValueModel.selfUseRatio * 100);
+  const upgradeSelfUsePercent = upgradeScenario
+    ? Math.round(upgradeScenario.optimisticValueModel.selfUseRatio * 100)
+    : null;
+  const storageAssumptionCopy = primaryFullCapture
+    ? `This quote assumes full solar capture with storage, using ${Math.round((config.batteryRoundTripEfficiency ?? 0.9) * 100)}% round-trip battery efficiency${smartTariffIncluded ? ` and about ${formatWholeNumber(headlineValueModel.smartTariffShiftKwh)} kWh/year of low-rate charging shifted into higher-value periods` : ''}.`
+    : kit.hasBattery
+    ? `The value model expects roughly ${primarySelfUsePercent}% of yearly solar generation to stay on-site with storage, using ${Math.round((config.batteryRoundTripEfficiency ?? 0.9) * 100)}% round-trip battery efficiency${smartTariffIncluded ? ` and about ${formatWholeNumber(headlineValueModel.smartTariffShiftKwh)} kWh/year of low-rate charging shifted into higher-value periods` : ''}.`
+    : upgradeScenario
+      ? `The value model expects roughly ${primarySelfUsePercent}% of yearly generation to stay on-site for this solar-only setup, rising to about ${upgradeSelfUsePercent}% with the matched battery bundle${upgradeFullCapture ? ' under the battery full-capture assumption' : ''}${smartTariffGain > 0 ? ` plus about ${formatCurrency(smartTariffGain)} of extra smart-tariff battery value` : ''}.`
+      : `The value model expects roughly ${primarySelfUsePercent}% of yearly generation to stay on-site for this household usage.`;
+  const firstYearValueRange = formatCurrencyRange(conservativeValueModel.annualValue, optimisticValueModel.annualValue);
+  const paybackRange = formatPaybackRange(conservativeRoi.paybackYears, optimisticRoi.paybackYears);
+  const netReturnRange = formatCurrencyRange(conservativeRoi.netReturn25yr, optimisticRoi.netReturn25yr);
+  const firstYearGenerationRange = `${formatWholeNumber(conservativeAdjusted.annualKwh)} to ${formatWholeNumber(optimisticAdjusted.annualKwh)} kWh/year`;
+  const selfUseRange = `${formatWholeNumber(conservativeValueModel.selfUsedKwh)} to ${formatWholeNumber(optimisticValueModel.selfUsedKwh)} kWh`;
+  const spillRange = `${formatWholeNumber(conservativeValueModel.exportKwh)} to ${formatWholeNumber(optimisticValueModel.exportKwh)} kWh`;
+  const smartTariffRange = `${formatWholeNumber(conservativeValueModel.smartTariffShiftKwh)} to ${formatWholeNumber(optimisticValueModel.smartTariffShiftKwh)} kWh`;
+  const heroStatNote = primaryFullCapture
+    ? `No unpaid spill modelled${smartTariffIncluded ? ` · ${smartTariffRange} smart-tariff shifting` : ''} · ${formatWholeNumber(annualUsageKwh)} kWh/year household use`
+    : `${selfUseRange} solar used in home · ${spillRange} remaining solar spill${smartTariffIncluded ? ` · ${smartTariffRange} smart-tariff shifting` : ''} · ${formatWholeNumber(annualUsageKwh)} kWh/year household use`;
+  const solarUseLabel = primaryFullCapture ? 'Solar Value Captured' : 'Solar Used In Home';
+  const solarUseSublabel = primaryFullCapture
+    ? '100% of yearly generation is treated as usable in the best-case model'
+    : `${Math.round(headlineValueModel.selfUseRatio * 100)}% of yearly generation in the best-case model`;
+  const gridFlowValue = primaryFullCapture ? '100%' : `${Math.round(headlineValueModel.exportKwh)} kWh`;
+  const gridFlowRange = primaryFullCapture ? 'No unpaid spill modelled' : `Modelled range: ${spillRange}`;
+  const gridFlowIcon = primaryFullCapture ? '🛡️' : '🔌';
 
   hideLoadingState();
 
@@ -263,23 +376,26 @@ function displayResults({ primaryScenario, upgradeScenario, selectedSpace, recom
         <p class="recommendation-text">
           Pricing this setup facing <strong>${escapeHtml(getCompassDirection(selectedSpace.orientation || 180))}</strong> at
           <strong>${selectedSpace.tilt || 35}°</strong> tilt.
-          The modelled first-year output is <strong>${roi.annualKwhYear1} kWh</strong>, with a more honest expected range of
-          <strong>${conservativeAdjusted.annualKwh}-${optimisticAdjusted.annualKwh} kWh/year</strong>.
+          In the strongest case this setup could produce <strong>${formatWholeNumber(headlineAdjusted.annualKwh)} kWh</strong> in year one, with the current shade model giving a broader range of
+          <strong>${firstYearGenerationRange}</strong>.
           ${annualValueCopy}
         </p>
         <div class="analysis-note" style="margin-bottom: 14px;">${usageContextCopy}</div>
+        <div class="analysis-note" style="margin-bottom: 14px;">Headline numbers on this screen show the upper-end modelled outcome. Smaller text underneath keeps the wider range visible.</div>
         <div class="badge-row" style="margin: 14px 0 10px;">
           <span class="info-badge">${kit.hasBattery ? 'Battery combo selected' : 'Solar-only kit selected'}</span>
           <span class="info-badge">Confidence: ${safeConfidence}</span>
           <span class="info-badge">Shadow factor: ${Math.round((selectedSpace.shadowFactor || adjusted.shadowFactor) * 100)}%</span>
         </div>
+        ${batterySpillNote}
         ${warningsHtml}
         ${selectionNote}
       </div>
       <div class="results-hero-stat">
-        <div class="results-hero-stat-label">Modelled first-year value</div>
-        <div class="results-hero-stat-value">${formatCurrency(valueModel.annualValue)}</div>
-        <div class="results-hero-stat-note">${Math.round(valueModel.selfUsedKwh)} kWh used in home · ${Math.round(valueModel.exportKwh)} kWh spill · ${formatWholeNumber(annualUsageKwh)} kWh/year household use</div>
+        <div class="results-hero-stat-label">Best-Case First-Year Value</div>
+        <div class="results-hero-stat-value">${formatCurrency(headlineValueModel.annualValue)}</div>
+        <div class="results-hero-stat-range">Modelled range: ${firstYearValueRange}</div>
+        <div class="results-hero-stat-note">${heroStatNote}</div>
       </div>
     </div>
   `;
@@ -287,38 +403,52 @@ function displayResults({ primaryScenario, upgradeScenario, selectedSpace, recom
   document.getElementById('results-grid').innerHTML = `
     <div class="card result-card">
       <div class="result-icon">⚡</div>
-      <div class="result-value accent">${conservativeAdjusted.annualKwh}-${optimisticAdjusted.annualKwh}</div>
-      <div class="result-label">kWh / year</div>
-      <div class="result-sublabel">Conservative to optimistic</div>
+      <div class="result-value accent">${formatWholeNumber(headlineAdjusted.annualKwh)}</div>
+      <div class="result-label">Best-Case kWh / year</div>
+      <div class="result-range-note">Modelled range: ${firstYearGenerationRange}</div>
+      <div class="result-sublabel">Upper-end output at current shading estimate</div>
     </div>
     <div class="card result-card">
       <div class="result-icon">💷</div>
-      <div class="result-value accent">${formatCurrency(valueModel.annualValue)}</div>
-      <div class="result-label">First-Year Value</div>
+      <div class="result-value accent">${formatCurrency(headlineValueModel.annualValue)}</div>
+      <div class="result-label">Best-Case First-Year Value</div>
+      <div class="result-range-note">Modelled range: ${firstYearValueRange}</div>
       <div class="result-sublabel">${valueBreakdownCopy}</div>
     </div>
     <div class="card result-card">
       <div class="result-icon">⏱️</div>
-      <div class="result-value success">${formatPayback(roi.paybackYears)}</div>
-      <div class="result-label">Payback Period</div>
-      <div class="result-sublabel">Upfront cost: ${formatCurrency(roi.kitCost)}</div>
+      <div class="result-value success">${formatPayback(headlineRoi.paybackYears)}</div>
+      <div class="result-label">Fastest Modelled Payback</div>
+      <div class="result-range-note">Modelled range: ${paybackRange}</div>
+      <div class="result-sublabel">Upfront cost: ${formatCurrency(headlineRoi.kitCost)}</div>
     </div>
     <div class="card result-card">
       <div class="result-icon">📈</div>
-      <div class="result-value accent">${formatCurrency(roi.netReturn25yr)}</div>
-      <div class="result-label">25-Year Net Return</div>
-      <div class="result-sublabel">${roi.roiPercent}% ROI</div>
+      <div class="result-value accent">${formatCurrency(headlineRoi.netReturn25yr)}</div>
+      <div class="result-label">Best-Case 25-Year Net Return</div>
+      <div class="result-range-note">Modelled range: ${netReturnRange}</div>
+      <div class="result-sublabel">${headlineRoi.roiPercent}% ROI</div>
     </div>
     <div class="card result-card">
       <div class="result-icon">🏠</div>
-      <div class="result-value success">${Math.round(valueModel.selfUsedKwh)} kWh</div>
-      <div class="result-label">Used In Your Home</div>
-      <div class="result-sublabel">${Math.round(valueModel.selfUseRatio * 100)}% of yearly generation</div>
+      <div class="result-value success">${Math.round(headlineValueModel.selfUsedKwh)} kWh</div>
+      <div class="result-label">${solarUseLabel}</div>
+      <div class="result-range-note">Modelled range: ${selfUseRange}</div>
+      <div class="result-sublabel">${solarUseSublabel}</div>
     </div>
+    ${smartTariffIncluded ? `
     <div class="card result-card">
-      <div class="result-icon">🔌</div>
-      <div class="result-value accent">${Math.round(valueModel.exportKwh)} kWh</div>
+      <div class="result-icon">🕒</div>
+      <div class="result-value success">${formatCurrency(headlineValueModel.smartTariffSavings)}</div>
+      <div class="result-label">Smart Tariff Value</div>
+      <div class="result-range-note">Modelled range: ${formatCurrencyRange(conservativeValueModel.smartTariffSavings, optimisticValueModel.smartTariffSavings)}</div>
+      <div class="result-sublabel">${Math.round(headlineValueModel.smartTariffShiftKwh)} kWh shifted from low-rate charging in the best-case model</div>
+    </div>` : ''}
+    <div class="card result-card">
+      <div class="result-icon">${gridFlowIcon}</div>
+      <div class="result-value accent">${gridFlowValue}</div>
       <div class="result-label">${gridSpillLabel}</div>
+      <div class="result-range-note">${gridFlowRange}</div>
       <div class="result-sublabel">${gridSpillCopy}</div>
     </div>
     <div class="card result-card">
@@ -336,17 +466,24 @@ function displayResults({ primaryScenario, upgradeScenario, selectedSpace, recom
   renderMonthlyChart(adjusted, solarData);
   renderSavingsChart(roi);
 
+  const spillDisclaimerCopy = primaryFullCapture
+    ? 'This quote assumes all generated solar is captured and valued at the selected import rate, with no unpaid spill.'
+    : exportPaymentEnabled
+      ? ''
+      : 'This plug-in solar quote assumes excess electricity sent to the grid is unpaid.';
   document.getElementById('price-disclaimer').textContent = exportPaymentEnabled
-    ? `Based on ${config.electricityPriceSource}: ${config.electricityPrice}${config.electricityPriceUnit}, plus ${config.exportTariff}${config.exportTariffUnit} from ${config.exportTariffSource}. Household usage is set to ${formatWholeNumber(annualUsageKwh)} kWh/year${usingDefaultAnnualUsage ? ` using the UK typical default from ${DEFAULT_ANNUAL_USAGE_SOURCE}` : ''}. The storage comparison assumes ${Math.round(config.solarSelfUseRatio * 100)}% direct self-use without a battery and ${Math.round(config.batteryRoundTripEfficiency * 100)}% round-trip storage efficiency.`
-    : `Based on ${config.electricityPriceSource}: ${config.electricityPrice}${config.electricityPriceUnit}. Household usage is set to ${formatWholeNumber(annualUsageKwh)} kWh/year${usingDefaultAnnualUsage ? ` using the UK typical default from ${DEFAULT_ANNUAL_USAGE_SOURCE}` : ''}. This plug-in solar quote assumes excess electricity sent to the grid is unpaid. The storage comparison assumes ${Math.round(config.solarSelfUseRatio * 100)}% direct self-use without a battery and ${Math.round(config.batteryRoundTripEfficiency * 100)}% round-trip storage efficiency.`;
+    ? `Based on ${pricing.sourceDetail}. The quote is currently using ${formatRatePence(pricing.unitRatePence)}${config.electricityPriceUnit}${pricing.standingChargePence != null ? `, with a regional standing charge reference of ${formatRatePence(pricing.standingChargePence)}p/day shown for context only.` : ''} Household usage is set to ${formatWholeNumber(annualUsageKwh)} kWh/year${usingDefaultAnnualUsage ? ` using the UK typical default from ${DEFAULT_ANNUAL_USAGE_SOURCE}` : ''}. Headline tiles show the best-case modelled outcome and smaller text shows the wider range.${spillDisclaimerCopy ? ` ${spillDisclaimerCopy}` : ''}${smartTariffIncluded ? ` Smart-tariff battery shifting is estimated using ${config.smartTariffOffPeakPrice}${config.smartTariffOffPeakPriceUnit} overnight import from ${config.smartTariffSource}.` : ''} ${storageAssumptionCopy}`
+    : `Based on ${pricing.sourceDetail}. The quote is currently using ${formatRatePence(pricing.unitRatePence)}${config.electricityPriceUnit}${pricing.standingChargePence != null ? `, with a regional standing charge reference of ${formatRatePence(pricing.standingChargePence)}p/day shown for context only.` : ''} Household usage is set to ${formatWholeNumber(annualUsageKwh)} kWh/year${usingDefaultAnnualUsage ? ` using the UK typical default from ${DEFAULT_ANNUAL_USAGE_SOURCE}` : ''}. Headline tiles show the best-case modelled outcome and smaller text shows the wider range. ${spillDisclaimerCopy}${smartTariffIncluded ? ` Smart-tariff battery shifting is estimated using ${config.smartTariffOffPeakPrice}${config.smartTariffOffPeakPriceUnit} overnight import from ${config.smartTariffSource}.` : ''} ${storageAssumptionCopy}`;
 
-  updateUsageAssumptionUi();
+  updateAssumptionUi();
 }
 
 function renderBatteryUpgrade(primaryScenario, upgradeScenario) {
   const slot = document.getElementById('battery-upgrade-slot');
   if (!slot) return;
+  const primaryFullCapture = usesFullSolarCapture(primaryScenario.kit);
   const exportPaymentEnabled = hasExportPayment();
+  const smartTariffIncluded = primaryScenario.valueModel.smartTariffSavings > 0;
 
   if (primaryScenario.kit.hasBattery) {
     slot.innerHTML = `
@@ -354,8 +491,10 @@ function renderBatteryUpgrade(primaryScenario, upgradeScenario) {
       <div class="battery-upgrade-eyebrow">Battery Included</div>
         <h3 class="battery-upgrade-title">${escapeHtml(primaryScenario.kit.name)} already includes storage</h3>
         <p class="battery-upgrade-copy">
-          This setup is expected to keep around <strong>${Math.round(primaryScenario.valueModel.selfUsedKwh)} kWh/year</strong> on-site and
-          leave roughly <strong>${Math.round(primaryScenario.valueModel.exportKwh)} kWh/year</strong> as remaining spill after the battery has shifted some midday solar into later household use.
+          ${primaryFullCapture
+    ? `This setup is modelled with full solar capture, so the quote treats all <strong>${Math.round(primaryScenario.valueModel.selfUsedKwh)} kWh/year</strong> of yearly solar generation as captured value.`
+    : `This setup is expected to keep around <strong>${Math.round(primaryScenario.valueModel.selfUsedKwh)} kWh/year</strong> on-site and leave roughly <strong>${Math.round(primaryScenario.valueModel.exportKwh)} kWh/year</strong> as remaining solar spill after the battery has shifted some midday solar into later household use.`}
+          ${smartTariffIncluded ? `It also includes about <strong>${formatCurrency(primaryScenario.valueModel.smartTariffSavings)}</strong> of year-one value from cheap-rate charging and peak-time discharge on a smart tariff.` : ''}
         </p>
         <div class="battery-upgrade-metrics">
           <div class="battery-upgrade-metric">
@@ -364,11 +503,11 @@ function renderBatteryUpgrade(primaryScenario, upgradeScenario) {
           </div>
           <div class="battery-upgrade-metric">
             <div class="battery-upgrade-value">${Math.round(primaryScenario.valueModel.shiftedKwh)} kWh</div>
-            <div class="battery-upgrade-label">Shifted into later use</div>
+            <div class="battery-upgrade-label">Solar shifted later</div>
           </div>
           <div class="battery-upgrade-metric">
-            <div class="battery-upgrade-value">${Math.round(primaryScenario.valueModel.exportKwh)} kWh</div>
-            <div class="battery-upgrade-label">${exportPaymentEnabled ? 'Still exported' : 'Remaining spill'}</div>
+            <div class="battery-upgrade-value">${smartTariffIncluded ? formatCurrency(primaryScenario.valueModel.smartTariffSavings) : primaryFullCapture ? '100%' : `${Math.round(primaryScenario.valueModel.exportKwh)} kWh`}</div>
+            <div class="battery-upgrade-label">${smartTariffIncluded ? 'Smart tariff value' : primaryFullCapture ? 'Solar capture active' : exportPaymentEnabled ? 'Still exported' : 'Remaining spill'}</div>
           </div>
           <div class="battery-upgrade-metric">
             <div class="battery-upgrade-value">${formatPayback(primaryScenario.roi.paybackYears)}</div>
@@ -389,6 +528,9 @@ function renderBatteryUpgrade(primaryScenario, upgradeScenario) {
   const selfUseGain = upgradeScenario.valueModel.selfUsedKwh - primaryScenario.valueModel.selfUsedKwh;
   const exportReduction = primaryScenario.valueModel.exportKwh - upgradeScenario.valueModel.exportKwh;
   const costDelta = upgradeScenario.kit.price - primaryScenario.kit.price;
+  const smartTariffGain = upgradeScenario.valueModel.smartTariffSavings - primaryScenario.valueModel.smartTariffSavings;
+  const upgradeHasSmartTariff = smartTariffGain > 0;
+  const upgradeLink = resolveRetailerLink(upgradeScenario.kit.storeUrl);
 
   slot.innerHTML = `
     <div class="card battery-upgrade-card">
@@ -398,20 +540,20 @@ function renderBatteryUpgrade(primaryScenario, upgradeScenario) {
         With the solar-only setup, the model expects around <strong>${Math.round(primaryScenario.valueModel.exportKwh)} kWh/year</strong> to leave the home unused.
         Because this quote assumes no payment for that excess, the matched battery combo could recover roughly
         <strong>${formatCurrency(annualValueGain)}</strong> of otherwise lost year-one value by lifting on-site use by about
-        <strong>${Math.round(selfUseGain)} kWh/year</strong>.
+        <strong>${Math.round(selfUseGain)} kWh/year</strong>${upgradeHasSmartTariff ? ` and adding about <strong>${formatCurrency(smartTariffGain)}</strong> of smart-tariff battery shifting from low-rate charging and peak-time discharge` : ''}.
       </p>
       <div class="battery-upgrade-metrics">
         <div class="battery-upgrade-metric">
           <div class="battery-upgrade-value">${formatCurrency(annualValueGain)}</div>
-          <div class="battery-upgrade-label">Recovered year-one value</div>
+          <div class="battery-upgrade-label">Year-one value lift</div>
         </div>
         <div class="battery-upgrade-metric">
           <div class="battery-upgrade-value">${Math.round(selfUseGain)} kWh</div>
           <div class="battery-upgrade-label">More solar kept on-site</div>
         </div>
         <div class="battery-upgrade-metric">
-          <div class="battery-upgrade-value">${Math.round(exportReduction)} kWh</div>
-          <div class="battery-upgrade-label">Less unpaid spill</div>
+          <div class="battery-upgrade-value">${upgradeHasSmartTariff ? formatCurrency(smartTariffGain) : Math.round(exportReduction)}${upgradeHasSmartTariff ? '' : ' kWh'}</div>
+          <div class="battery-upgrade-label">${upgradeHasSmartTariff ? 'Smart tariff value' : 'Less unpaid spill'}</div>
         </div>
         <div class="battery-upgrade-metric">
           <div class="battery-upgrade-value">${formatCurrency(costDelta)}</div>
@@ -423,13 +565,17 @@ function renderBatteryUpgrade(primaryScenario, upgradeScenario) {
         ${exportPaymentEnabled
     ? `It would still export about <strong>${Math.round(upgradeScenario.valueModel.exportKwh)} kWh/year</strong>, worth roughly
         <strong>${formatCurrency(upgradeScenario.valueModel.exportIncome)}</strong> in year one.`
-    : `It would still leave about <strong>${Math.round(upgradeScenario.valueModel.exportKwh)} kWh/year</strong> as spill, but this quote assumes no payment for that excess.`}
+    : `With the battery combo selected, this model assumes the solar spill is captured on-site rather than left unpaid.${upgradeHasSmartTariff ? ` It also includes about <strong>${formatCurrency(smartTariffGain)}</strong> of low-rate charging and peak-time discharge value where the battery kit supports it.` : ''}`}
       </div>
       <div class="result-actions">
         <button class="btn btn-primary" id="btn-switch-battery" data-kit-id="${safeDataId(upgradeScenario.kit.id)}">
           Use Battery Combo In This Quote
         </button>
-        ${renderExternalAction(upgradeScenario.kit.storeUrl, 'View Battery Combo →', 'btn btn-outline')}
+        ${renderExternalAction(
+          upgradeLink,
+          upgradeLink.usesAffiliateLink ? 'View Battery Partner Offer →' : 'View Battery Combo →',
+          'btn btn-outline'
+        )}
       </div>
     </div>
   `;
@@ -444,10 +590,15 @@ function renderBatteryUpgrade(primaryScenario, upgradeScenario) {
 function renderResultActions(primaryScenario) {
   const actionsEl = document.getElementById('results-actions');
   if (!actionsEl) return;
+  const primaryLink = resolveRetailerLink(primaryScenario.kit.storeUrl);
 
   actionsEl.innerHTML = `
     <div class="result-actions">
-      ${renderExternalAction(primaryScenario.kit.storeUrl, `View ${primaryScenario.kit.brand || 'Retailer'} Store →`, 'btn btn-primary')}
+      ${renderExternalAction(
+        primaryLink,
+        primaryLink.usesAffiliateLink ? 'View Partner Offer →' : `View ${primaryScenario.kit.brand || 'Retailer'} Store →`,
+        'btn btn-primary'
+      )}
       <button class="btn btn-outline" id="btn-recalc-results">
         Refresh This Quote
       </button>
@@ -586,55 +737,7 @@ function renderSavingsChart(roi) {
   charts.push(chart);
 }
 
-function estimateEnergyValue(annualKwh, kit, annualUsageKwh) {
-  const electricityRate = config.electricityPrice / 100;
-  const exportRate = (config.exportTariff ?? 0) / 100;
-  const directSelfUseRatio = clamp(config.solarSelfUseRatio ?? 0.42, 0, 1);
-  const householdDemandKwh = Math.max(0, annualUsageKwh || 0);
-  const maxDirectSelfUseKwh = annualKwh * directSelfUseRatio;
-  const directSelfUseKwh = Math.min(householdDemandKwh, maxDirectSelfUseKwh);
-
-  let shiftedKwh = 0;
-  let batteryLossKwh = 0;
-  let rawShiftedKwh = 0;
-  let exportKwh = annualKwh - directSelfUseKwh;
-
-  if (kit.hasBattery) {
-    const referenceBatteryWh = config.referenceBatteryCapacityWh ?? 2000;
-    const batterySizeFactor = clamp((kit.batteryCapacityWh || referenceBatteryWh) / referenceBatteryWh, 0.65, 1.2);
-    const rawShiftRatio = clamp((config.batteryShiftableShare ?? 0.38) * batterySizeFactor, 0, 1 - directSelfUseRatio);
-    const roundTripEfficiency = config.batteryRoundTripEfficiency ?? 0.9;
-    const remainingDemandKwh = Math.max(0, householdDemandKwh - directSelfUseKwh);
-    const maxRawShiftedKwh = annualKwh * rawShiftRatio;
-    const maxDeliveredShiftedKwh = maxRawShiftedKwh * roundTripEfficiency;
-
-    shiftedKwh = Math.min(remainingDemandKwh, maxDeliveredShiftedKwh);
-    rawShiftedKwh = roundTripEfficiency > 0
-      ? Math.min(maxRawShiftedKwh, shiftedKwh / roundTripEfficiency)
-      : 0;
-    exportKwh = Math.max(0, annualKwh - directSelfUseKwh - rawShiftedKwh);
-    batteryLossKwh = Math.max(0, rawShiftedKwh - shiftedKwh);
-  }
-
-  const selfUsedKwh = directSelfUseKwh + shiftedKwh;
-  const billSavings = selfUsedKwh * electricityRate;
-  const exportIncome = exportKwh * exportRate;
-  const annualValue = billSavings + exportIncome;
-
-  return {
-    annualValue: roundCurrency(annualValue),
-    billSavings: roundCurrency(billSavings),
-    exportIncome: roundCurrency(exportIncome),
-    selfUsedKwh: round1(selfUsedKwh),
-    exportKwh: round1(exportKwh),
-    shiftedKwh: round1(shiftedKwh),
-    batteryLossKwh: round1(batteryLossKwh),
-    selfUseRatio: annualKwh > 0 ? selfUsedKwh / annualKwh : 0,
-    effectiveValuePerKwh: annualKwh > 0 ? annualValue / annualKwh : 0,
-  };
-}
-
-function initUsageControls() {
+function initAssumptionControls() {
   document.getElementById('btn-apply-usage')?.addEventListener('click', () => {
     applyAnnualUsageInput();
   });
@@ -647,7 +750,7 @@ function initUsageControls() {
     }
 
     setState({ annualUsageKwh: null, results: null });
-    updateUsageAssumptionUi();
+    updateAssumptionUi();
     resetResultsForRecalculation();
     calculateResults();
   });
@@ -656,6 +759,30 @@ function initUsageControls() {
     if (event.key === 'Enter') {
       event.preventDefault();
       applyAnnualUsageInput();
+    }
+  });
+
+  document.getElementById('btn-apply-electricity-price')?.addEventListener('click', () => {
+    applyElectricityPriceInput();
+  });
+
+  document.getElementById('btn-use-smart-price')?.addEventListener('click', () => {
+    const input = document.getElementById('electricity-price-input');
+    if (input) {
+      input.value = '';
+      input.setCustomValidity('');
+    }
+
+    setState({ electricityPricePence: null, results: null });
+    updateAssumptionUi();
+    resetResultsForRecalculation();
+    calculateResults();
+  });
+
+  document.getElementById('electricity-price-input')?.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      applyElectricityPriceInput();
     }
   });
 }
@@ -668,7 +795,7 @@ function applyAnnualUsageInput() {
   if (!rawValue) {
     input.setCustomValidity('');
     setState({ annualUsageKwh: null, results: null });
-    updateUsageAssumptionUi();
+    updateAssumptionUi();
     resetResultsForRecalculation();
     calculateResults();
     return;
@@ -683,7 +810,7 @@ function applyAnnualUsageInput() {
 
   input.setCustomValidity('');
   setState({ annualUsageKwh: Math.round(annualUsageKwh), results: null });
-  updateUsageAssumptionUi();
+  updateAssumptionUi();
   resetResultsForRecalculation();
   calculateResults();
 }
@@ -692,6 +819,7 @@ function updateUsageAssumptionUi() {
   const annualUsageInput = getAnnualUsageInput();
   const resolvedAnnualUsage = getResolvedAnnualUsageKwh();
   const usingDefaultAnnualUsage = isUsingDefaultAnnualUsage();
+  const selectedKit = resolveSelectedKit(getState('selectedKit'));
 
   const pill = document.getElementById('annual-usage-pill');
   if (pill) {
@@ -705,7 +833,7 @@ function updateUsageAssumptionUi() {
 
   const helper = document.getElementById('annual-usage-helper');
   if (helper) {
-    helper.textContent = getAnnualUsageHelperText(usingDefaultAnnualUsage, resolvedAnnualUsage);
+    helper.textContent = getAnnualUsageHelperText(usingDefaultAnnualUsage, resolvedAnnualUsage, selectedKit);
   }
 
   const source = document.getElementById('annual-usage-source');
@@ -719,10 +847,121 @@ function updateUsageAssumptionUi() {
   }
 }
 
-function getAnnualUsageHelperText(usingDefaultAnnualUsage, annualUsageKwh) {
+function applyElectricityPriceInput() {
+  const input = document.getElementById('electricity-price-input');
+  if (!input) return;
+
+  const rawValue = input.value.trim();
+  if (!rawValue) {
+    input.setCustomValidity('');
+    setState({ electricityPricePence: null, results: null });
+    updateAssumptionUi();
+    resetResultsForRecalculation();
+    calculateResults();
+    return;
+  }
+
+  const electricityPricePence = normalizeCustomUnitRatePence(rawValue);
+  if (!Number.isFinite(electricityPricePence)) {
+    input.setCustomValidity('Enter an electricity price between 1 and 100 p/kWh, or leave it blank to use the postcode-based default.');
+    input.reportValidity();
+    return;
+  }
+
+  input.setCustomValidity('');
+  setState({ electricityPricePence, results: null });
+  updateAssumptionUi();
+  resetResultsForRecalculation();
+  calculateResults();
+}
+
+function updatePricingAssumptionUi() {
+  const pricing = getResolvedElectricityPricing();
+  const electricityPriceInput = getElectricityPriceInput();
+  const usingCustomElectricityPrice = isUsingCustomElectricityPrice();
+
+  const pill = document.getElementById('electricity-price-pill');
+  if (pill) {
+    pill.textContent = getElectricityPricePillText(pricing, usingCustomElectricityPrice);
+  }
+
+  const input = document.getElementById('electricity-price-input');
+  if (input && document.activeElement !== input) {
+    input.value = electricityPriceInput ?? '';
+  }
+
+  const helper = document.getElementById('electricity-price-helper');
+  if (helper) {
+    helper.textContent = getElectricityPriceHelperText(pricing, usingCustomElectricityPrice);
+  }
+
+  const source = document.getElementById('electricity-price-source');
+  if (source) {
+    source.textContent = pricing.source;
+  }
+
+  const effective = document.getElementById('electricity-price-effective');
+  if (effective) {
+    effective.textContent = `${formatRatePence(pricing.unitRatePence)} p/kWh`;
+  }
+
+  const detail = document.getElementById('electricity-price-detail');
+  if (detail) {
+    detail.textContent = getElectricityPriceDetailText(pricing);
+  }
+}
+
+function updateAssumptionUi() {
+  updateUsageAssumptionUi();
+  updatePricingAssumptionUi();
+}
+
+function getAnnualUsageHelperText(usingDefaultAnnualUsage, annualUsageKwh, selectedKit = resolveSelectedKit(getState('selectedKit'))) {
+  const fullCaptureWithStorage = usesFullSolarCapture(selectedKit);
+
   return usingDefaultAnnualUsage
-    ? `Leave this blank to keep the UK typical household default of ${formatWholeNumber(DEFAULT_ANNUAL_USAGE_KWH)} kWh/year. Higher home use usually means more of the solar stays valuable on-site.`
-    : `The quote is currently using ${formatWholeNumber(annualUsageKwh)} kWh/year to split generation between home use and spill. Clear the field or use the UK average button if you do not know your number yet.`;
+    ? fullCaptureWithStorage
+      ? `Leave this blank to keep the UK typical household default of ${formatWholeNumber(DEFAULT_ANNUAL_USAGE_KWH)} kWh/year. With full solar capture turned on, this mainly fine-tunes storage and smart-tariff assumptions.`
+      : `Leave this blank to keep the UK typical household default of ${formatWholeNumber(DEFAULT_ANNUAL_USAGE_KWH)} kWh/year. Higher home use usually means more of the solar stays valuable on-site.`
+    : fullCaptureWithStorage
+      ? `The quote is currently using ${formatWholeNumber(annualUsageKwh)} kWh/year. With full solar capture turned on, this mainly fine-tunes storage and smart-tariff assumptions.`
+      : `The quote is currently using ${formatWholeNumber(annualUsageKwh)} kWh/year to split generation between home use and spill. Clear the field or use the UK average button if you do not know your number yet.`;
+}
+
+function getElectricityPriceHelperText(pricing, usingCustomElectricityPrice) {
+  if (usingCustomElectricityPrice) {
+    return `The quote is currently using your custom import rate of ${formatRatePence(pricing.unitRatePence)} p/kWh. Clear the field or use Postcode Default to return to the postcode-based regional average.`;
+  }
+
+  if (pricing.mode === 'regional') {
+    return `Your saved location maps to Ofgem's ${pricing.region} region, so the quote is using ${formatRatePence(pricing.unitRatePence)} p/kWh by default. Enter your real tariff for a tighter estimate.`;
+  }
+
+  return `We could not confidently infer an Ofgem region from the saved location, so the quote is using the Great Britain average of ${formatRatePence(pricing.unitRatePence)} p/kWh. Enter your real tariff for a tighter estimate.`;
+}
+
+function getElectricityPriceDetailText(pricing) {
+  if (pricing.mode === 'regional' && pricing.standingChargePence != null) {
+    return `${pricing.region} standing charge reference: ${formatRatePence(pricing.standingChargePence)} p/day. Daily standing charges are not included in solar savings.`;
+  }
+
+  if (pricing.mode === 'custom') {
+    return 'Custom unit rate active. Daily standing charges are not included in solar savings.';
+  }
+
+  return 'Great Britain average fallback. Daily standing charges are not included in solar savings.';
+}
+
+function getElectricityPricePillText(pricing, usingCustomElectricityPrice) {
+  if (usingCustomElectricityPrice) {
+    return 'Custom tariff active';
+  }
+
+  if (pricing.mode === 'regional' && pricing.region) {
+    return `${pricing.region} average active`;
+  }
+
+  return 'GB average active';
 }
 
 function getBatteryUpgradeKit(selectedKit) {
@@ -794,29 +1033,66 @@ function capitalise(value) {
   return `${value.charAt(0).toUpperCase()}${value.slice(1)}`;
 }
 
-function round1(value) {
-  return Math.round(value * 10) / 10;
-}
-
-function roundCurrency(value) {
-  return Math.round(value * 100) / 100;
-}
-
 function formatWholeNumber(value) {
   return Math.round(value || 0).toLocaleString('en-GB');
 }
 
-function hasExportPayment() {
-  return (config.exportTariff ?? 0) > 0;
+function formatRatePence(value) {
+  if (!Number.isFinite(value)) {
+    return '0';
+  }
+
+  return value.toLocaleString('en-GB', {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  });
 }
 
-function renderExternalAction(url, label, className) {
-  const safeUrl = sanitizeExternalUrl(url, { allowedHosts: ALLOWED_RETAILER_HOSTS });
+function renderExternalAction(linkInfoOrUrl, label, className) {
+  const linkInfo = typeof linkInfoOrUrl === 'string'
+    ? { url: linkInfoOrUrl, usesAffiliateLink: false }
+    : linkInfoOrUrl;
+  const safeUrl = linkInfo?.usesAffiliateLink
+    ? sanitizeExternalUrl(linkInfo?.url)
+    : sanitizeExternalUrl(linkInfo?.url, { allowedHosts: ALLOWED_RETAILER_HOSTS });
   if (!safeUrl) {
     return `<button class="${className}" type="button" disabled>${escapeHtml(label)}</button>`;
   }
 
   return `<a href="${escapeHtml(safeUrl)}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" class="${className}">${escapeHtml(label)}</a>`;
+}
+
+function formatCurrencyRange(valueA, valueB) {
+  return formatRangeText(valueA, valueB, formatCurrency, 0.5);
+}
+
+function formatPaybackRange(valueA, valueB) {
+  return formatRangeText(valueA, valueB, formatPayback, 0.05);
+}
+
+function formatRangeText(valueA, valueB, formatter, tolerance = 0) {
+  const range = getNumericRange(valueA, valueB);
+  if (!range) {
+    return 'Range unavailable';
+  }
+
+  if (Math.abs(range.max - range.min) <= tolerance) {
+    return formatter(range.min);
+  }
+
+  return `${formatter(range.min)} to ${formatter(range.max)}`;
+}
+
+function getNumericRange(valueA, valueB) {
+  const values = [valueA, valueB].filter((value) => Number.isFinite(value));
+  if (values.length === 0) {
+    return null;
+  }
+
+  return {
+    min: Math.min(...values),
+    max: Math.max(...values),
+  };
 }
 
 export function cleanup() {

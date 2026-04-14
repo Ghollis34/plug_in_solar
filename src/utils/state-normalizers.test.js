@@ -3,6 +3,7 @@ import {
   normalizeLocation,
   normalizeObstacle,
   normalizeAnnualUsageKwh,
+  normalizeElectricityPricePence,
   normalizePersistedState,
   normalizeSelectedKit,
   normalizeSpace,
@@ -16,11 +17,19 @@ describe('state normalizers', () => {
       lng: -181,
       displayName: '  10 Downing St\u0000<script> ',
       postcode: ' SW1A 2AA ',
+      city: ' Westminster ',
+      county: ' Greater London ',
+      stateDistrict: ' London ',
+      country: ' United Kingdom ',
     })).toEqual({
       lat: 90,
       lng: -180,
       displayName: '10 Downing St<script>',
       postcode: 'SW1A 2AA',
+      city: 'Westminster',
+      county: 'Greater London',
+      stateDistrict: 'London',
+      country: 'United Kingdom',
     });
   });
 
@@ -39,6 +48,9 @@ describe('state normalizers', () => {
       warnings: ['  <script>alert(1)</script>  '],
       warningLevel: 'critical',
       confidence: 'very-high',
+      mountHostType: 'shed',
+      mountHostId: 'shed-1',
+      mountHeightM: 120,
     });
 
     expect(normalized.type).toBe('ground');
@@ -51,6 +63,9 @@ describe('state normalizers', () => {
     expect(normalized.warnings).toEqual(['<script>alert(1)</script>']);
     expect(normalized.warningLevel).toBe('low');
     expect(normalized.confidence).toBe('medium');
+    expect(normalized.mountHostType).toBe('shed');
+    expect(normalized.mountHostId).toBe('shed-1');
+    expect(normalized.mountHeightM).toBe(80);
   });
 
   it('rejects malformed obstacles and clamps valid obstacle dimensions', () => {
@@ -89,6 +104,12 @@ describe('state normalizers', () => {
     expect(normalizeAnnualUsageKwh(3200)).toBe(3200);
   });
 
+  it('allows blank electricity price and clamps custom values', () => {
+    expect(normalizeElectricityPricePence('')).toBeNull();
+    expect(normalizeElectricityPricePence(0.2)).toBe(1);
+    expect(normalizeElectricityPricePence(24.678)).toBe(24.68);
+  });
+
   it('reconciles invalid selected space and stale analysis', () => {
     const defaultState = {
       currentStep: 0,
@@ -100,6 +121,7 @@ describe('state normalizers', () => {
       obstacles: [],
       sunAnalysis: null,
       annualUsageKwh: null,
+      electricityPricePence: null,
       selectedKit: null,
       results: null,
     };

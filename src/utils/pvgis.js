@@ -1,3 +1,5 @@
+import config from '../data/config.json';
+
 const PVGIS_BASE = 'https://re.jrc.ec.europa.eu/api/v5_3';
 const PVGIS_CACHE_PREFIX = 'pvgis_cache_v1:';
 const PVGIS_CACHE_TTL_MS = 1000 * 60 * 60 * 24;
@@ -30,7 +32,7 @@ export async function fetchSolarData(lat, lng, tilt = 35, azimuth = 0) {
     outputformat: 'json',
     pvcalculation: '1',
     peakpower: '1',       // 1 kWp for normalised output
-    loss: '14',            // System losses (cables, inverter etc.)
+    loss: String(config.pvgisSystemLossPercent ?? 10), // System losses (cables, inverter etc.)
     mountingplace: 'building',
   });
 

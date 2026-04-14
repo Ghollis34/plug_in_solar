@@ -305,12 +305,7 @@ function analyzeSpaceDay(date, lat, lng, space, buildings, obstacles) {
 }
 
 function getGuideSample(pointLat, pointLng, buildings, obstacles, sampleDates) {
-  const space = {
-    id: 'guide',
-    type: 'ground',
-    centerLat: pointLat,
-    centerLng: pointLng,
-  };
+  const space = createGuideSampleSpace(pointLat, pointLng, buildings, obstacles);
 
   let totalWeight = 0;
   let weightedFactor = 0;
@@ -330,12 +325,7 @@ function getGuideSample(pointLat, pointLng, buildings, obstacles, sampleDates) {
 }
 
 function getGuideSampleFast(pointLat, pointLng, buildings, obstacles, sampleDates) {
-  const space = {
-    id: 'guide',
-    type: 'ground',
-    centerLat: pointLat,
-    centerLng: pointLng,
-  };
+  const space = createGuideSampleSpace(pointLat, pointLng, buildings, obstacles);
 
   let totalWeight = 0;
   let weightedFactor = 0;
@@ -374,22 +364,81 @@ function getGuideSampleFast(pointLat, pointLng, buildings, obstacles, sampleDate
 }
 
 function getStrongestObstruction(space, sunPos, buildings, obstacles) {
+  const spaceMountHeight = getSpaceMountHeight(space, buildings, obstacles);
   let strongest = { amount: 0, type: null };
 
   buildings.forEach((building) => {
-    const block = getBuildingBlock(space, building, sunPos);
+    const block = getBuildingBlock(space, building, sunPos, spaceMountHeight);
     if (block.amount > strongest.amount) strongest = block;
   });
 
   obstacles.forEach((obstacle) => {
-    const block = getObstacleBlock(space, obstacle, sunPos);
+    const block = getObstacleBlock(space, obstacle, sunPos, spaceMountHeight);
     if (block.amount > strongest.amount) strongest = block;
   });
 
   return strongest;
 }
 
-function getBuildingBlock(space, building, sunPos) {
+function createGuideSampleSpace(pointLat, pointLng, buildings, obstacles) {
+  const shedHost = findGuideSampleShed(pointLat, pointLng, obstacles);
+  if (shedHost) {
+    return {
+      id: 'guide',
+      type: 'flat-roof',
+      centerLat: pointLat,
+      centerLng: pointLng,
+      mountHostType: 'shed',
+      mountHostId: shedHost.id,
+      mountHeightM: Math.max(0, shedHost.heightM || 0),
+    };
+  }
+
+  const buildingHost = findGuideSampleBuilding(pointLat, pointLng, buildings);
+  if (buildingHost) {
+    return {
+      id: 'guide',
+      type: 'flat-roof',
+      centerLat: pointLat,
+      centerLng: pointLng,
+      mountHostType: 'building',
+      mountHostId: buildingHost.id,
+      mountHeightM: Math.max(0, buildingHost.height || 0),
+    };
+  }
+
+  return {
+    id: 'guide',
+    type: 'ground',
+    centerLat: pointLat,
+    centerLng: pointLng,
+  };
+}
+
+function findGuideSampleShed(pointLat, pointLng, obstacles = []) {
+  const sampleSpace = {
+    centerLat: pointLat,
+    centerLng: pointLng,
+  };
+
+  return obstacles.find((obstacle) => isSpaceInsideShed(sampleSpace, obstacle)) || null;
+}
+
+function findGuideSampleBuilding(pointLat, pointLng, buildings = []) {
+  const sampleSpace = {
+    centerLat: pointLat,
+    centerLng: pointLng,
+  };
+
+  const primaryBuilding = buildings.find((building) => building?.kind === 'user' || building?.id === 'user-building');
+  if (primaryBuilding && isSpaceInsideBuilding(sampleSpace, primaryBuilding)) {
+    return primaryBuilding;
+  }
+
+  return null;
+}
+
+function getBuildingBlock(space, building, sunPos, spaceMountHeight = 0) {
   if (!Number.isFinite(building?.lat) || !Number.isFinite(building?.lng) || !Number.isFinite(building?.height)) {
     return { amount: 0, type: null };
   }
@@ -404,35 +453,45 @@ function getBuildingBlock(space, building, sunPos) {
     return { amount: 0, type: null };
   }
 
-  if (isPointInsideShadow(basePolygon, building.height, sunPos)) {
+  const effectiveHeight = Math.max(0, (building.height || 0) - spaceMountHeight);
+  if (effectiveHeight <= 0) {
+    return { amount: 0, type: null };
+  }
+
+  if (isPointInsideShadow(basePolygon, effectiveHeight, sunPos)) {
     return { amount: 1, type: 'building' };
   }
 
   return { amount: 0, type: null };
 }
 
-function getObstacleBlock(space, obstacle, sunPos) {
+function getObstacleBlock(space, obstacle, sunPos, spaceMountHeight = 0) {
   if (obstacle.type === 'fence') {
-    return getFenceBlock(space, obstacle, sunPos);
+    return getFenceBlock(space, obstacle, sunPos, spaceMountHeight);
   }
 
   if (obstacle.type === 'tree') {
-    return getTreeBlock(space, obstacle, sunPos);
+    return getTreeBlock(space, obstacle, sunPos, spaceMountHeight);
   }
 
   if (obstacle.type === 'shed') {
-    return getShedBlock(space, obstacle, sunPos);
+    return getShedBlock(space, obstacle, sunPos, spaceMountHeight);
   }
 
   return { amount: 0, type: null };
 }
 
-function getFenceBlock(space, obstacle, sunPos) {
+function getFenceBlock(space, obstacle, sunPos, spaceMountHeight = 0) {
   if (!obstacle.points?.length || obstacle.points.length < 2) {
     return { amount: 0, type: null };
   }
 
-  const shadowLength = getShadowLength(obstacle.heightM || 1.8, sunPos.altitude);
+  const effectiveHeight = Math.max(0, (obstacle.heightM || 1.8) - spaceMountHeight);
+  if (effectiveHeight <= 0) {
+    return { amount: 0, type: null };
+  }
+
+  const shadowLength = getShadowLength(effectiveHeight, sunPos.altitude);
   if (!Number.isFinite(shadowLength) || shadowLength <= 0) {
     return { amount: 0, type: null };
   }
@@ -458,12 +517,17 @@ function getFenceBlock(space, obstacle, sunPos) {
     : { amount: 0, type: null };
 }
 
-function getTreeBlock(space, obstacle, sunPos) {
+function getTreeBlock(space, obstacle, sunPos, spaceMountHeight = 0) {
   if (!Number.isFinite(obstacle.lat) || !Number.isFinite(obstacle.lng)) {
     return { amount: 0, type: null };
   }
 
-  const shadowLength = getShadowLength(obstacle.heightM || 5, sunPos.altitude);
+  const effectiveHeight = Math.max(0, (obstacle.heightM || 5) - spaceMountHeight);
+  if (effectiveHeight <= 0) {
+    return { amount: 0, type: null };
+  }
+
+  const shadowLength = getShadowLength(effectiveHeight, sunPos.altitude);
   if (!Number.isFinite(shadowLength) || shadowLength <= 0) {
     return { amount: 0, type: null };
   }
@@ -484,7 +548,7 @@ function getTreeBlock(space, obstacle, sunPos) {
     : { amount: 0, type: null };
 }
 
-function getShedBlock(space, obstacle, sunPos) {
+function getShedBlock(space, obstacle, sunPos, spaceMountHeight = 0) {
   if (!Number.isFinite(obstacle.lat) || !Number.isFinite(obstacle.lng)) {
     return { amount: 0, type: null };
   }
@@ -501,9 +565,101 @@ function getShedBlock(space, obstacle, sunPos) {
     return { x: projected.dx, y: projected.dy };
   });
 
-  return isPointInsideShadow(basePolygon, obstacle.heightM || 2.5, sunPos)
+  if (isMountedOnShed(space, obstacle, basePolygon)) {
+    return { amount: 0, type: null };
+  }
+
+  const effectiveHeight = Math.max(0, (obstacle.heightM || 2.5) - spaceMountHeight);
+  if (effectiveHeight <= 0) {
+    return { amount: 0, type: null };
+  }
+
+  return isPointInsideShadow(basePolygon, effectiveHeight, sunPos)
     ? { amount: 1, type: 'shed' }
     : { amount: 0, type: null };
+}
+
+function isMountedOnShed(space, obstacle, basePolygon) {
+  if (space?.type !== 'flat-roof') {
+    return false;
+  }
+
+  if (space?.mountHostType || space?.mountHostId) {
+    return space.mountHostType === 'shed' && space.mountHostId === obstacle.id;
+  }
+
+  return pointInPolygon({ x: 0, y: 0 }, basePolygon);
+}
+
+function getSpaceMountHeight(space, buildings = [], obstacles = []) {
+  const explicitMountHeight = Number.isFinite(space?.mountHeightM)
+    ? Math.max(0, space.mountHeightM)
+    : null;
+
+  if (space?.type !== 'flat-roof') {
+    return explicitMountHeight ?? 0;
+  }
+
+  if ((explicitMountHeight ?? 0) > 0) {
+    return explicitMountHeight;
+  }
+
+  if (space?.mountHostType === 'shed' && space?.mountHostId) {
+    const shed = obstacles.find((obstacle) => obstacle?.type === 'shed' && obstacle.id === space.mountHostId);
+    return Math.max(0, shed?.heightM || 0);
+  }
+
+  if (space?.mountHostType === 'building' && space?.mountHostId) {
+    const building = buildings.find((entry) => entry?.id === space.mountHostId);
+    return Math.max(0, building?.height || 0);
+  }
+
+  const shed = obstacles.find((obstacle) => isSpaceInsideShed(space, obstacle));
+  if (shed) {
+    return Math.max(0, shed.heightM || 0);
+  }
+
+  const building = buildings.find((entry) => isSpaceInsideBuilding(space, entry));
+  if (building) {
+    return Math.max(0, building.height || 0);
+  }
+
+  return 0;
+}
+
+function isSpaceInsideShed(space, obstacle) {
+  if (obstacle?.type !== 'shed' || !Number.isFinite(obstacle.lat) || !Number.isFinite(obstacle.lng)) {
+    return false;
+  }
+
+  const ring = getRectangleRing(
+    obstacle.lat,
+    obstacle.lng,
+    obstacle.widthM || 3,
+    obstacle.depthM || 2,
+    obstacle.rotationDeg || 0
+  );
+
+  const polygon = ring.slice(0, -1).map((point) => {
+    const projected = projectPointToMeters(space.centerLat, space.centerLng, point.lat, point.lng);
+    return { x: projected.dx, y: projected.dy };
+  });
+
+  return pointInPolygon({ x: 0, y: 0 }, polygon);
+}
+
+function isSpaceInsideBuilding(space, building) {
+  if (!Number.isFinite(building?.lat) || !Number.isFinite(building?.lng) || !Number.isFinite(building?.height)) {
+    return false;
+  }
+
+  const basePoints = getBuildingBasePoints(building);
+  const polygon = basePoints.map((point) => {
+    const projected = projectPointToMeters(space.centerLat, space.centerLng, point.lat, point.lng);
+    return { x: projected.dx, y: projected.dy };
+  });
+
+  return pointInPolygon({ x: 0, y: 0 }, polygon);
 }
 
 function buildBuildingShadowFeature(building, sunPos) {

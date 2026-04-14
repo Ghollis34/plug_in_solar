@@ -138,7 +138,7 @@ export function init() {
       const saved = getState('location');
       const searchInput = document.getElementById('location-search');
       if (saved) {
-        setLocation(saved.lat, saved.lng, saved.displayName, { preserveDownstream: true });
+        setLocation(saved, undefined, undefined, { preserveDownstream: true });
         if (searchInput) searchInput.value = saved.displayName || '';
       } else if (searchInput) {
         searchInput.value = '';
@@ -269,11 +269,10 @@ async function searchPlaces(query) {
         const idx = parseInt(item.dataset.idx);
         const place = data[idx];
         if (!place) return;
-        const lat = parseFloat(place.lat);
-        const lng = parseFloat(place.lon);
-        setLocation(lat, lng, place.display_name);
+        const location = createLocationFromPlace(place);
+        setLocation(location);
         resultsEl.classList.add('hidden');
-        document.getElementById('location-search').value = place.display_name;
+        document.getElementById('location-search').value = location.displayName;
       });
     });
   } catch (err) {
@@ -306,28 +305,41 @@ async function reverseGeocode(lat, lng) {
       referrerPolicy: 'no-referrer',
     });
     const data = await res.json();
-    
-    const name = data.display_name || `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
-    setLocation(lat, lng, name);
-    document.getElementById('location-search').value = name;
+    const location = createLocationFromPlace({
+      lat,
+      lon: lng,
+      display_name: data.display_name || `${lat.toFixed(4)}, ${lng.toFixed(4)}`,
+      address: data.address,
+    });
+    setLocation(location);
+    document.getElementById('location-search').value = location.displayName;
   } catch (err) {
     // Still set location even if reverse geocode fails
-    setLocation(lat, lng, `${lat.toFixed(4)}, ${lng.toFixed(4)}`);
+    setLocation(createLocationFromPlace({
+      lat,
+      lon: lng,
+      display_name: `${lat.toFixed(4)}, ${lng.toFixed(4)}`,
+    }));
   }
 }
 
-function setLocation(lat, lng, displayName, options = {}) {
+function setLocation(locationOrLat, lng, displayName, options = {}) {
   const preserveDownstream = options.preserveDownstream === true;
+  const location = typeof locationOrLat === 'object' && locationOrLat
+    ? locationOrLat
+    : createLocationFromPlace({ lat: locationOrLat, lon: lng, display_name: displayName });
+  const { lat, lng: resolvedLng, displayName: resolvedDisplayName, postcode } = location;
 
   // Update state
   setState({
-    location: { lat, lng, displayName },
+    location,
     ...(preserveDownstream ? {} : {
       buildings: [],
       spaces: [],
       obstacles: [],
       sunAnalysis: null,
       results: null,
+      electricityPricePence: null,
       selectedSpaceId: null,
       selectedKit: null,
       maxVisitedStep: 1,
@@ -335,8 +347,8 @@ function setLocation(lat, lng, displayName, options = {}) {
   });
 
   // Update UI
-  document.getElementById('location-name').textContent = displayName;
-  document.getElementById('location-coords').textContent = `${lat.toFixed(5)}°N, ${Math.abs(lng).toFixed(5)}°${lng >= 0 ? 'E' : 'W'}`;
+  document.getElementById('location-name').textContent = resolvedDisplayName;
+  document.getElementById('location-coords').textContent = `${postcode ? `${postcode} · ` : ''}${lat.toFixed(5)}°N, ${Math.abs(resolvedLng).toFixed(5)}°${resolvedLng >= 0 ? 'E' : 'W'}`;
   document.getElementById('location-info')?.classList.remove('hidden');
   document.getElementById('btn-next-location').disabled = false;
   updateLocationGuide();
@@ -348,12 +360,12 @@ function setLocation(lat, lng, displayName, options = {}) {
   el.style.cssText = 'width: 30px; height: 30px; background: var(--accent); border-radius: 50%; border: 3px solid white; box-shadow: 0 0 20px rgba(245,158,11,0.5); cursor: pointer;';
   
   marker = new mapRuntime.maplibregl.Marker({ element: el })
-    .setLngLat([lng, lat])
+    .setLngLat([resolvedLng, lat])
     .addTo(map);
 
   // Fly to location
   map.flyTo({
-    center: [lng, lat],
+    center: [resolvedLng, lat],
     zoom: 17,
     pitch: 50,
     bearing: -20,
@@ -418,4 +430,21 @@ function showLocationMapLoading(message) {
 
 function hideLocationMapLoading() {
   document.getElementById('location-map-loading')?.classList.add('hidden');
+}
+
+function createLocationFromPlace(place = {}) {
+  const address = place.address || {};
+  const lat = Number(place.lat);
+  const lng = Number(place.lon);
+
+  return {
+    lat,
+    lng,
+    displayName: place.display_name || `${lat.toFixed(4)}, ${lng.toFixed(4)}`,
+    postcode: address.postcode || '',
+    city: address.city || address.town || address.village || address.hamlet || address.suburb || '',
+    county: address.county || '',
+    stateDistrict: address.state_district || address.state || address.region || '',
+    country: address.country || '',
+  };
 }

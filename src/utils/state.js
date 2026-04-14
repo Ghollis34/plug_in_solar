@@ -13,13 +13,14 @@ const STORAGE_KEY = 'solarspot_state';
 const defaultState = {
   currentStep: 0,
   maxVisitedStep: 0,
-  location: null,       // { lat, lng, displayName, postcode }
+  location: null,       // { lat, lng, displayName, postcode, ... }
   buildings: [],        // [{ id, floors, pitched, height, lat, lng, widthM, depthM, frontDoorFacing }]
   spaces: [],           // [{ id, name, type, polygon, orientation, tilt, sunHours }]
   selectedSpaceId: null,
   obstacles: [],        // [{ id, type, ... }]
   sunAnalysis: null,    // { bestSpaceId, scores: [...], date }
   annualUsageKwh: null, // Estimated household electricity usage per year
+  electricityPricePence: null, // Optional custom import tariff in p/kWh
   selectedKit: null,    // persisted as kit id reference
   results: null,        // { annualKwh, annualSavings, paybackYears, ... }
 };

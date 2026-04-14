@@ -1,4 +1,5 @@
 import config from '../data/config.json';
+import { resolveElectricityPricing } from './electricity-pricing.js';
 import { getRectangleRing } from './geometry.js';
 import { getState } from './state.js';
 
@@ -116,6 +117,19 @@ export function getResolvedAnnualUsageKwh(state = null) {
 
 export function isUsingDefaultAnnualUsage(state = null) {
   return getAnnualUsageInput(state) == null;
+}
+
+export function getElectricityPriceInput(state = null) {
+  const electricityPricePence = resolveState(state).electricityPricePence;
+  return Number.isFinite(electricityPricePence) ? electricityPricePence : null;
+}
+
+export function isUsingCustomElectricityPrice(state = null) {
+  return getElectricityPriceInput(state) != null;
+}
+
+export function getResolvedElectricityPricing(state = null) {
+  return resolveElectricityPricing(getLocationState(state), getElectricityPriceInput(state));
 }
 
 function resolveState(state) {

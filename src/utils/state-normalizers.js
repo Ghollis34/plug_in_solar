@@ -8,6 +8,7 @@ const SAFE_CONFIDENCE_LEVELS = new Set(['low', 'medium', 'high']);
 const SAFE_WARNING_LEVELS = new Set(['low', 'medium', 'high']);
 const SAFE_BREAKDOWN_VALUES = new Set(['sun', 'mixed', 'shade']);
 const SAFE_OBSTRUCTION_KEYS = new Set(['tree', 'fence', 'shed', 'building']);
+const SAFE_MOUNT_HOST_TYPES = new Set(['shed', 'building']);
 
 export function normalizePersistedState(value, defaultState = {}) {
   if (!value || typeof value !== 'object') {
@@ -49,6 +50,8 @@ export function normalizeStateValue(key, value) {
       return normalizeSunAnalysis(value);
     case 'annualUsageKwh':
       return normalizeAnnualUsageKwh(value);
+    case 'electricityPricePence':
+      return normalizeElectricityPricePence(value);
     case 'selectedKit':
       return normalizeSelectedKit(value);
     case 'results':
@@ -98,6 +101,10 @@ export function normalizeLocation(value) {
     lng,
     displayName: sanitizeText(value.displayName, 160),
     postcode: sanitizeText(value.postcode, 24),
+    city: sanitizeText(value.city, 80),
+    county: sanitizeText(value.county, 80),
+    stateDistrict: sanitizeText(value.stateDistrict, 80),
+    country: sanitizeText(value.country, 80),
   };
 }
 
@@ -177,6 +184,9 @@ export function normalizeSpace(space) {
     warningLevel: normalizeWarningLevel(space.warningLevel),
     warnings: normalizeWarnings(space.warnings),
     alignmentHint: sanitizeText(space.alignmentHint, 120),
+    mountHostType: SAFE_MOUNT_HOST_TYPES.has(space.mountHostType) ? space.mountHostType : null,
+    mountHostId: normalizeId(space.mountHostId),
+    mountHeightM: clampNumber(space.mountHeightM, 0, 80) ?? 0,
     orientationLabel: sanitizeText(space.orientationLabel, 80),
     breakdown: normalizeBreakdown(space.breakdown),
     obstructionSummary: normalizeObstructionSummary(space.obstructionSummary),
@@ -317,6 +327,14 @@ export function normalizeSelectedKit(value) {
 export function normalizeAnnualUsageKwh(value) {
   if (value == null || value === '') return null;
   return clampNumber(value, 100, 100000);
+}
+
+export function normalizeElectricityPricePence(value) {
+  if (value == null || value === '') return null;
+  const clamped = clampNumber(value, 1, 100);
+  return Number.isFinite(clamped)
+    ? Math.round(clamped * 100) / 100
+    : null;
 }
 
 export function normalizeResults(value) {
