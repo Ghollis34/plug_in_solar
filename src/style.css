@@ -1938,6 +1938,109 @@ body.map-placement-banner-active .satellite-toggle-btn {
   color: var(--text-secondary);
 }
 
+.shadow-guidance-card {
+  padding: 16px;
+  margin-bottom: 12px;
+  border-radius: 22px;
+  background: rgba(14, 19, 31, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.shadow-guidance-card h3 {
+  margin: 4px 0 8px;
+  font-family: var(--font-heading);
+  font-size: 1.16rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.shadow-guidance-card p {
+  margin: 0;
+  font-size: 0.82rem;
+  line-height: 1.55;
+  color: var(--text-secondary);
+}
+
+.shadow-guidance-card p + p {
+  margin-top: 8px;
+  color: var(--text-primary);
+}
+
+.shadow-guidance-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.shadow-guidance-kicker::before {
+  content: '';
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: currentColor;
+  box-shadow: 0 0 18px currentColor;
+}
+
+.shadow-guidance-low {
+  background: linear-gradient(135deg, rgba(78, 222, 163, 0.12), rgba(14, 19, 31, 0.72));
+  border-color: rgba(78, 222, 163, 0.2);
+}
+
+.shadow-guidance-low .shadow-guidance-kicker,
+.shadow-guidance-low h3 {
+  color: var(--success);
+}
+
+.shadow-guidance-medium,
+.shadow-guidance-pending {
+  background: linear-gradient(135deg, rgba(255, 185, 95, 0.12), rgba(14, 19, 31, 0.72));
+  border-color: rgba(255, 185, 95, 0.2);
+}
+
+.shadow-guidance-medium .shadow-guidance-kicker,
+.shadow-guidance-medium h3,
+.shadow-guidance-pending .shadow-guidance-kicker,
+.shadow-guidance-pending h3 {
+  color: var(--accent);
+}
+
+.shadow-guidance-high {
+  background: linear-gradient(135deg, rgba(255, 140, 131, 0.14), rgba(14, 19, 31, 0.72));
+  border-color: rgba(255, 140, 131, 0.22);
+}
+
+.shadow-guidance-high .shadow-guidance-kicker,
+.shadow-guidance-high h3 {
+  color: var(--danger);
+}
+
+.shadow-reassurance-note {
+  margin: 12px 0;
+}
+
+.shadow-details-panel {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border-radius: 18px;
+  background: rgba(14, 19, 31, 0.54);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.shadow-details-panel summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.shadow-details-panel[open] summary {
+  margin-bottom: 10px;
+}
+
 .satellite-toggle-btn {
   position: absolute;
   top: 16px;
