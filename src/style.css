@@ -3776,6 +3776,10 @@ body {
     border-radius: 22px;
   }
 
+  .map-overlay-panel-ranking {
+    max-height: min(28vh, 236px);
+  }
+
   .map-overlay-bottom {
     left: 16px;
     right: 16px;
