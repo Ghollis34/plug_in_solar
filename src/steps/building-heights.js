@@ -62,7 +62,7 @@ export function render() {
           <div class="map-panel-header">
             <div>
               <div class="map-panel-kicker">Site Setup</div>
-              <h3 class="map-panel-title">Property Outline & Obstacles</h3>
+              <h3 class="map-panel-title">Check your house from above</h3>
             </div>
             <div class="map-panel-pill">${obstacleCount} saved</div>
           </div>
@@ -75,35 +75,35 @@ export function render() {
             <div class="metric-glass-note" id="nearby-buildings-note">Checking neighbouring buildings nearby…</div>
           </div>
 
-          <div class="card-flat card-flat-subtle task-guide-card">
+          <div class="card-flat card-flat-subtle task-guide-card site-setup-primary-guide">
             <div class="task-guide-header">
-              <div class="task-guide-title">How This Step Works</div>
+              <div class="task-guide-title">What to do here</div>
               <div class="task-guide-summary" id="site-guide-summary">
-                The main job here is marking anything fixed on the site that could cast shade. Only adjust the house outline if it looks off.
+                Make sure the outline is on your house. If there is an obvious tree, shed, wall, or fence nearby, add it. If not, press continue.
               </div>
             </div>
             <div class="task-guide-list">
               <div class="task-guide-item">
                 <span class="task-guide-index">1</span>
                 <div class="task-guide-copy">
-                  <strong>Add fixed shade obstacles</strong>
-                  <span>Mark only obvious shade sources near the likely panel area. You can skip this if you are not sure.</span>
-                </div>
-                <span class="task-guide-status" id="site-guide-obstacles-status">Optional</span>
-              </div>
-              <div class="task-guide-item">
-                <span class="task-guide-index">2</span>
-                <div class="task-guide-copy">
-                  <strong>Check the outlined house if needed</strong>
-                  <span>Use the nudge arrows only if the outline looks slightly off. Property facing is just a fallback.</span>
+                  <strong>Check the green house outline</strong>
+                  <span>It should sit over your roof. The map starts top-down so it is easier to recognise.</span>
                 </div>
                 <span class="task-guide-status" id="site-guide-outline-status">Ready</span>
               </div>
               <div class="task-guide-item">
+                <span class="task-guide-index">2</span>
+                <div class="task-guide-copy">
+                  <strong>Add obvious shade only</strong>
+                  <span>Trees, sheds, walls, or fences are optional. Skip this if nothing obvious is nearby.</span>
+                </div>
+                <span class="task-guide-status" id="site-guide-obstacles-status">Optional</span>
+              </div>
+              <div class="task-guide-item">
                 <span class="task-guide-index">3</span>
                 <div class="task-guide-copy">
-                  <strong>Check the saved list</strong>
-                  <span>Continue when the list below matches the parts of the site that could affect the quote.</span>
+                  <strong>Continue when it looks close</strong>
+                  <span>This is an estimate, not a survey. You can adjust later if needed.</span>
                 </div>
                 <span class="task-guide-status" id="site-guide-review-status">Ready</span>
               </div>
@@ -116,6 +116,12 @@ export function render() {
               Add only fixed items that may shade the panels, such as a straight fence section, tree, shed, or high wall. If nothing obvious is nearby, continue without adding any.
             </div>
           </div>
+
+          <details class="advanced-placement-card site-setup-advanced mb-md">
+            <summary>
+              <span>Optional: fine tune shade items and house outline</span>
+              <small>Most users can leave this closed</small>
+            </summary>
 
           <div class="form-group mb-md">
             <label class="form-label">Selected obstacle position</label>
@@ -262,6 +268,8 @@ export function render() {
               Start with the detected property, then nudge the outline if the footprint is slightly off.
             </div>
           </div>
+
+          </details>
         </div>
       </div>
 
@@ -334,11 +342,11 @@ function initMap(location, token) {
   return mapSession.createMap(token, {
     container: 'buildings-map',
     center: [initialCenter.lng, initialCenter.lat],
-    zoom: 18.2,
-    pitch: 56,
-    bearing: -18,
+    zoom: 17.4,
+    pitch: 0,
+    bearing: 0,
     satelliteDefault: true,
-    interactionHintText: 'Use the satellite map to check the house outline. Add shade obstacles only if they are obvious — you can leave advanced alignment alone.',
+    interactionHintText: 'Top-down satellite view: check the outline is on your house. Add obvious shade only if you can see it, otherwise continue.',
     onLoad: (mapInstance) => {
       map = mapInstance;
       mapLoaded = true;
@@ -527,9 +535,10 @@ function updateDirectionPreview() {
 }
 
 function focusMapOnDetectedBuilding(location) {
-  if (!map || !draftCenter) return;
+  const activeMap = map;
+  if (!activeMap || !draftCenter) return;
 
-  const detectedBuilding = mapRuntime.captureBuildingAtLocation(map, draftCenter, { searchRadiusM: 32 });
+  const detectedBuilding = mapRuntime.captureBuildingAtLocation(activeMap, draftCenter, { searchRadiusM: 32 });
   const targetCenter = detectedBuilding
     ? { lat: detectedBuilding.lat, lng: detectedBuilding.lng }
     : draftCenter;
@@ -549,7 +558,7 @@ function focusMapOnDetectedBuilding(location) {
   const finish = () => {
     if (completed) return;
     completed = true;
-    map.off('moveend', handleMoveEnd);
+    activeMap.off('moveend', handleMoveEnd);
     if (fallbackTimer) {
       window.clearTimeout(fallbackTimer);
       fallbackTimer = null;
@@ -563,14 +572,14 @@ function focusMapOnDetectedBuilding(location) {
   if (detectedBuilding?.footprint?.length) {
     const bounds = getFootprintBounds(detectedBuilding.footprint);
     if (bounds) {
-      map.on('moveend', handleMoveEnd);
+      activeMap.on('moveend', handleMoveEnd);
       fallbackTimer = window.setTimeout(finish, 1100);
       try {
-        map.fitBounds(bounds, {
-          padding: { top: 88, right: 92, bottom: 88, left: 470 },
-          maxZoom: 19.8,
-          bearing: -18,
-          pitch: 58,
+        activeMap.fitBounds(bounds, {
+          padding: { top: 96, right: 96, bottom: 220, left: 460 },
+          maxZoom: 18.1,
+          bearing: 0,
+          pitch: 0,
           duration: 900,
           essential: true,
         });
@@ -581,14 +590,14 @@ function focusMapOnDetectedBuilding(location) {
     }
   }
 
-  map.on('moveend', handleMoveEnd);
+  activeMap.on('moveend', handleMoveEnd);
   fallbackTimer = window.setTimeout(finish, 1050);
   try {
-    map.easeTo({
+    activeMap.easeTo({
       center: [targetCenter.lng, targetCenter.lat],
-      zoom: 19.1,
-      pitch: 58,
-      bearing: -18,
+      zoom: 17.8,
+      pitch: 0,
+      bearing: 0,
       duration: 850,
       essential: true,
     });

@@ -451,11 +451,10 @@ export function createPanelMarkerElement(space, options = {}) {
   const grid = document.createElement('span');
   grid.className = 'panel-marker-grid';
 
-  const icon = document.createElement('span');
-  icon.className = 'panel-marker-icon';
-  icon.textContent = space.typeIcon || '☀️';
+  const cells = document.createElement('span');
+  cells.className = 'panel-marker-cells';
 
-  card.append(grid, icon);
+  card.append(grid, cells);
   el.append(halo, surface, card);
 
   if (typeof options.onClick === 'function') {
@@ -476,10 +475,6 @@ export function updatePanelMarkerElement(element, space, options = {}) {
   element.dataset.spaceType = space.type || 'ground';
   element.dataset.surfaceAligned = space.surfaceAligned ? 'true' : 'false';
 
-  const icon = element.querySelector('.panel-marker-icon');
-  if (icon) {
-    icon.textContent = space.typeIcon || '☀️';
-  }
 }
 
 export function captureNearbyBuildings(map, center, options = {}) {

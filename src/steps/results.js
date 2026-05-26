@@ -56,6 +56,7 @@ export function render() {
         </div>
 
         <div id="results-content" class="hidden">
+          <div id="results-sticky-actions" class="results-sticky-actions" aria-live="polite"></div>
           <div class="results-shell">
             <div class="card-flat results-usage-card">
               <div class="results-usage-header">
@@ -611,23 +612,40 @@ function renderBatteryUpgrade(primaryScenario, upgradeScenario) {
 
 function renderResultActions(primaryScenario) {
   const actionsEl = document.getElementById('results-actions');
+  const stickyActionsEl = document.getElementById('results-sticky-actions');
   if (!actionsEl) return;
   const primaryLink = resolveRetailerLink(primaryScenario.kit.storeUrl);
+  const actionLabel = primaryLink.usesAffiliateLink ? 'View Partner Offer →' : `View ${primaryScenario.kit.brand || 'Retailer'} Store →`;
+  const actionHtml = renderExternalAction(primaryLink, actionLabel, 'btn btn-primary');
 
   actionsEl.innerHTML = `
     <div class="result-actions">
-      ${renderExternalAction(
-        primaryLink,
-        primaryLink.usesAffiliateLink ? 'View Partner Offer →' : `View ${primaryScenario.kit.brand || 'Retailer'} Store →`,
-        'btn btn-primary'
-      )}
+      ${actionHtml}
       <button class="btn btn-outline" id="btn-recalc-results">
         Refresh This Quote
       </button>
     </div>
   `;
 
+  if (stickyActionsEl) {
+    stickyActionsEl.innerHTML = `
+      <div class="results-sticky-copy">
+        <strong>${escapeHtml(primaryScenario.kit.name)}</strong>
+        <span>Ready to buy or compare the recommended partner kit.</span>
+      </div>
+      <div class="results-sticky-buttons">
+        ${actionHtml}
+        <button class="btn btn-outline btn-sm" id="btn-sticky-refresh-results" type="button">Refresh quote</button>
+      </div>
+    `;
+  }
+
   document.getElementById('btn-recalc-results')?.addEventListener('click', () => {
+    resetResultsForRecalculation();
+    calculateResults();
+  });
+
+  document.getElementById('btn-sticky-refresh-results')?.addEventListener('click', () => {
     resetResultsForRecalculation();
     calculateResults();
   });
@@ -637,8 +655,9 @@ function renderMonthlyChart(adjusted, solarData) {
   const ctx = document.getElementById('chart-monthly');
   if (!ctx) return;
 
-  const labels = adjusted.months.map((month) => month.monthName);
-  const data = adjusted.months.map((month) => month.adjustedKwh);
+  const monthlyData = buildMonthlyChartData(adjusted, solarData);
+  const labels = monthlyData.map((month) => month.monthName);
+  const data = monthlyData.map((month) => month.adjustedKwh);
 
   const chart = new Chart(ctx, {
     type: 'bar',
@@ -687,6 +706,46 @@ function renderMonthlyChart(adjusted, solarData) {
   });
 
   charts.push(chart);
+}
+
+function buildMonthlyChartData(adjusted = {}, solarData = {}) {
+  if (Array.isArray(adjusted.months) && adjusted.months.length > 0) {
+    return adjusted.months.map((month, index) => ({
+      monthName: month.monthName || getMonthShortName(index),
+      adjustedKwh: Number.isFinite(month.adjustedKwh) ? month.adjustedKwh : 0,
+    }));
+  }
+
+  const sourceMonths = Array.isArray(solarData.months) && solarData.months.length > 0
+    ? solarData.months
+    : MONTH_NAMES.map((monthName, index) => ({ monthName, kwhPerKwp: 1, month: index + 1 }));
+  const sourceTotal = sourceMonths.reduce((sum, month) => sum + getMonthWeight(month), 0);
+  const annualKwh = Number.isFinite(adjusted.annualKwh) ? adjusted.annualKwh : 0;
+  const equalShare = sourceMonths.length > 0 ? annualKwh / sourceMonths.length : 0;
+
+  return sourceMonths.map((month, index) => {
+    const weight = getMonthWeight(month);
+    const adjustedKwh = sourceTotal > 0
+      ? annualKwh * (weight / sourceTotal)
+      : equalShare;
+
+    return {
+      monthName: month.monthName || getMonthShortName(index),
+      adjustedKwh: Math.round(adjustedKwh * 10) / 10,
+    };
+  });
+}
+
+function getMonthWeight(month) {
+  const candidates = [month.adjustedKwh, month.kwhPerKwp, month.kwh, month.energy, month.avgDailyKwh];
+  const value = candidates.find(Number.isFinite);
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+function getMonthShortName(index) {
+  return MONTH_NAMES[index] || `M${index + 1}`;
 }
 
 function renderSavingsChart(roi) {

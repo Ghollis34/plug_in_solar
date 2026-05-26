@@ -476,9 +476,9 @@ function applyMarkerSelectionStyles() {
 }
 
 function resolveSelectedSpaceId(ranked) {
-  if (selectedSpaceId && ranked.some((space) => space.id === selectedSpaceId)) {
-    return selectedSpaceId;
-  }
+  // The shadow step should make the recommendation for the user, not ask them to
+  // interpret the rankings first. Always start the quote from the strongest
+  // sunlight location, while still allowing a manual card/marker override.
   return ranked[0]?.id || null;
 }
 
