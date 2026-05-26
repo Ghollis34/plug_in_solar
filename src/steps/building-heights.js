@@ -337,6 +337,8 @@ function initMap(location, token) {
     zoom: 18.2,
     pitch: 56,
     bearing: -18,
+    satelliteDefault: true,
+    interactionHintText: 'Use the satellite map to check the house outline. Add shade obstacles only if they are obvious — you can leave advanced alignment alone.',
     onLoad: (mapInstance) => {
       map = mapInstance;
       mapLoaded = true;
