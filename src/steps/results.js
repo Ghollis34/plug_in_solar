@@ -30,6 +30,7 @@ import {
 
 let charts = [];
 let calculationRequestId = 0;
+const RESULTS_STICKY_ACTIONS_ID = 'results-sticky-actions';
 
 export function render() {
   const selectedKit = resolveSelectedKit(getState('selectedKit'));
@@ -56,7 +57,6 @@ export function render() {
         </div>
 
         <div id="results-content" class="hidden">
-          <div id="results-sticky-actions" class="results-sticky-actions" aria-live="polite"></div>
           <div class="results-shell">
             <div class="card-flat results-usage-card">
               <div class="results-usage-header">
@@ -501,6 +501,28 @@ function displayResults({ primaryScenario, upgradeScenario, selectedSpace, recom
   updateAssumptionUi();
 }
 
+function ensureResultsStickyActions() {
+  let stickyActionsEl = document.getElementById(RESULTS_STICKY_ACTIONS_ID);
+  if (stickyActionsEl) return stickyActionsEl;
+
+  stickyActionsEl = document.createElement('div');
+  stickyActionsEl.id = RESULTS_STICKY_ACTIONS_ID;
+  stickyActionsEl.className = 'results-sticky-actions';
+  stickyActionsEl.setAttribute('aria-live', 'polite');
+  stickyActionsEl.setAttribute('data-results-portal', 'true');
+  document.body.appendChild(stickyActionsEl);
+  return stickyActionsEl;
+}
+
+function removeResultsStickyActions() {
+  const stickyActionsEl = document.getElementById(RESULTS_STICKY_ACTIONS_ID);
+  if (stickyActionsEl?.dataset.resultsPortal === 'true') {
+    stickyActionsEl.remove();
+  } else if (stickyActionsEl) {
+    stickyActionsEl.innerHTML = '';
+  }
+}
+
 function renderBatteryUpgrade(primaryScenario, upgradeScenario) {
   const slot = document.getElementById('battery-upgrade-slot');
   if (!slot) return;
@@ -612,7 +634,7 @@ function renderBatteryUpgrade(primaryScenario, upgradeScenario) {
 
 function renderResultActions(primaryScenario) {
   const actionsEl = document.getElementById('results-actions');
-  const stickyActionsEl = document.getElementById('results-sticky-actions');
+  const stickyActionsEl = ensureResultsStickyActions();
   if (!actionsEl) return;
   const primaryLink = resolveRetailerLink(primaryScenario.kit.storeUrl);
   const actionLabel = primaryLink.usesAffiliateLink ? 'View Partner Offer →' : `View ${primaryScenario.kit.brand || 'Retailer'} Store →`;
@@ -635,7 +657,6 @@ function renderResultActions(primaryScenario) {
       </div>
       <div class="results-sticky-buttons">
         ${actionHtml}
-        <button class="btn btn-outline btn-sm" id="btn-sticky-refresh-results" type="button">Refresh quote</button>
       </div>
     `;
   }
@@ -1077,12 +1098,14 @@ function hideLoadingState() {
 function resetResultsForRecalculation() {
   calculationRequestId += 1;
   destroyCharts();
+  removeResultsStickyActions();
   document.getElementById('results-content')?.classList.add('hidden');
   document.getElementById('results-loading')?.classList.remove('hidden');
 }
 
 function showError(message) {
   destroyCharts();
+  removeResultsStickyActions();
   const loadingEl = document.getElementById('results-loading');
   if (!loadingEl) return;
 
@@ -1182,4 +1205,5 @@ function getNumericRange(valueA, valueB) {
 export function cleanup() {
   calculationRequestId += 1;
   destroyCharts();
+  removeResultsStickyActions();
 }

@@ -184,6 +184,8 @@ function initMap(location, token) {
     onLoad: (mapInstance) => {
       map = mapInstance;
       addSpaceMarkers();
+      map.on('zoom', () => applyMarkerSelectionStyles());
+      map.on('moveend', () => applyMarkerSelectionStyles());
       mapRuntime.drawObstacles(map, getObstaclesState());
       const center = getAnalysisCenter(null, location);
       mapRuntime.drawSuitabilityHeatmap(map, samplePlacementHeatmap(center.lat, center.lng, getAnalysisBuildings(location), getObstaclesState()));
@@ -470,7 +472,11 @@ function applyMarkerSelectionStyles() {
   markers.forEach((entry) => {
     const isSelected = entry.id === selectedSpaceId;
     const space = getSpacesState().find((item) => item.id === entry.id) || { id: entry.id };
-    mapRuntime.updatePanelMarkerElement(entry.element, space, { selected: isSelected });
+    mapRuntime.updatePanelMarkerElement(entry.element, space, {
+      selected: isSelected,
+      zoom: map?.getZoom?.(),
+      lat: space.centerLat ?? map?.getCenter?.()?.lat,
+    });
     entry.marker.setLngLat(entry.marker.getLngLat());
   });
 }

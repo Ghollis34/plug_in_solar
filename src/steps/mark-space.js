@@ -311,6 +311,14 @@ function bindMapInteractions() {
   map.on('rotate', () => {
     refreshPanelMarkers();
   });
+
+  map.on('zoom', () => {
+    refreshPanelMarkers();
+  });
+
+  map.on('moveend', () => {
+    refreshPanelMarkers();
+  });
 }
 
 function initControls() {
@@ -767,6 +775,8 @@ function refreshPanelMarkers() {
     mapRuntime.updatePanelMarkerElement(entry.element, space, {
       selected: isSelected,
       rotation: getMarkerScreenRotation(space),
+      zoom: map?.getZoom?.(),
+      lat: space.centerLat ?? map?.getCenter?.()?.lat,
     });
   });
 }
