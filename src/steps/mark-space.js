@@ -66,7 +66,7 @@ export function render() {
       <div class="step-header">
         <div class="section-kicker">Step 3 · Placement</div>
         <h2 class="step-title">Choose Panel Locations</h2>
-        <p class="step-subtitle">Add the candidate panel spots you want us to compare. Your site obstacles from the previous step are already applied to the map.</p>
+        <p class="step-subtitle">Pick one likely place for the panels. We will prefill the technical settings, and you can add more spots only if you want to compare them.</p>
       </div>
 
       <div class="step-body full-width">
@@ -95,41 +95,41 @@ export function render() {
             <div class="map-panel-pill">${obstacleCount} site obstacles</div>
           </div>
 
-          <h4 style="margin-bottom: 12px;">Add Panel Locations</h4>
+          <h4 style="margin-bottom: 12px;">Choose a likely panel spot</h4>
 
           <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 16px;">
-            Add at least one candidate panel spot. Each marker stores its own orientation and tilt, and the heatmap shows where direct sun is strongest around the property.
+            Start with one spot. The green map areas are usually sunnier, and the app will handle the facing and tilt unless you want to change them.
           </p>
 
           <div class="card-flat card-flat-subtle task-guide-card">
             <div class="task-guide-header">
               <div class="task-guide-title">How To Use This Step</div>
               <div class="task-guide-summary" id="placement-guide-summary">
-                Start with the greener parts of the map, then drop two or three likely panel spots to compare.
+                Choose the surface, then tap the map once where the panels could go.
               </div>
             </div>
             <div class="task-guide-list">
               <div class="task-guide-item">
                 <span class="task-guide-index">1</span>
                 <div class="task-guide-copy">
-                  <strong>Look for the greenest areas</strong>
-                  <span>Greener cells usually have the strongest year-round direct sun.</span>
+                  <strong>Use the green guide</strong>
+                  <span>Greener areas usually get more direct sun through the year.</span>
                 </div>
                 <span class="task-guide-status" id="placement-guide-heatmap-status">Loading</span>
               </div>
               <div class="task-guide-item">
                 <span class="task-guide-index">2</span>
                 <div class="task-guide-copy">
-                  <strong>Pick a mounting surface</strong>
-                  <span>Choose the kind of surface the panel may sit on, such as fence, wall, or ground.</span>
+                  <strong>Choose where it would sit</strong>
+                  <span>Pick roof, wall, balcony, fence, or garden so the marker uses sensible defaults.</span>
                 </div>
                 <span class="task-guide-status" id="placement-guide-surface-status">Ground</span>
               </div>
               <div class="task-guide-item">
                 <span class="task-guide-index">3</span>
                 <div class="task-guide-copy">
-                  <strong>Add likely panel spots</strong>
-                  <span>Place at least one marker. Two or three spots gives the comparison step more to work with.</span>
+                  <strong>Tap one spot on the map</strong>
+                  <span>One marker is enough. Add more only if you want to compare options.</span>
                 </div>
                 <span class="task-guide-status" id="placement-guide-spots-status">Add 1+</span>
               </div>
@@ -149,40 +149,47 @@ export function render() {
             </div>
           </div>
 
-          <div class="form-group mb-md">
-            <label class="form-label">Panel facing</label>
-            <div class="flex items-center gap-md">
-              <input type="range" class="range-slider" id="orientation-slider"
-                     min="0" max="360" value="180" />
-              <span id="orientation-value" style="min-width: 108px; text-align: right; font-weight: 600;">South (180°)</span>
-            </div>
-            <div class="analysis-note" id="orientation-note" style="margin-top: 8px;">
-              Pick the general facing if you know it. Fence-mounted panels snap to saved fences, and wall mounts snap to the selected property outline.
-            </div>
-          </div>
+          <details class="advanced-placement-card mb-md">
+            <summary>
+              <span>Advanced: adjust facing and tilt</span>
+              <small>Optional — defaults are already filled in</small>
+            </summary>
 
-          <div class="form-group mb-md">
-            <label class="form-label">Panel tilt (°)</label>
-            <div class="flex items-center gap-md">
-              <input type="range" class="range-slider" id="tilt-slider"
-                     min="0" max="90" value="35" />
-              <span id="tilt-value" style="min-width: 36px; text-align: right; font-weight: 600;">35°</span>
+            <div class="form-group mb-md">
+              <label class="form-label">Panel facing</label>
+              <div class="flex items-center gap-md">
+                <input type="range" class="range-slider" id="orientation-slider"
+                       min="0" max="360" value="180" />
+                <span id="orientation-value" style="min-width: 108px; text-align: right; font-weight: 600;">South (180°)</span>
+              </div>
+              <div class="analysis-note" id="orientation-note" style="margin-top: 8px;">
+                Leave this alone unless you already know the exact direction the panel will face.
+              </div>
             </div>
-            <div class="analysis-note" id="tilt-note" style="margin-top: 8px;">
-              We prefill the annual-best tilt for the selected site and keep it editable for fixed hardware.
+
+            <div class="form-group mb-md">
+              <label class="form-label">Panel tilt</label>
+              <div class="flex items-center gap-md">
+                <input type="range" class="range-slider" id="tilt-slider"
+                       min="0" max="90" value="35" />
+                <span id="tilt-value" style="min-width: 36px; text-align: right; font-weight: 600;">35°</span>
+              </div>
+              <div class="analysis-note" id="tilt-note" style="margin-top: 8px;">
+                Leave this as suggested unless your panel stand or bracket has a fixed angle.
+              </div>
             </div>
-          </div>
+          </details>
 
           <button class="btn btn-primary w-full mb-md" id="btn-add-space">
             📌 Add Ground / Garden Spot
           </button>
 
           <div class="analysis-note mb-md" id="placement-status">
-            Start with the greenest area, then add one or more likely panel spots. Go back to Site Setup if you need to change fences, sheds, or trees.
+            Tap the map once to add a likely panel spot. You can continue with one marker.
           </div>
 
           <div class="analysis-note mb-md">
-            Fence and wall snaps show a coloured alignment strip under the marker so you can see when it has locked onto a real surface.
+            Optional: add another spot if you want to compare a second roof, wall, balcony, or garden position.
           </div>
 
           <div id="obstacles-list"></div>
@@ -237,7 +244,7 @@ export function init() {
       updateObstaclesList();
       updateSpacesList();
       updateNextButton();
-      updatePlacementStatus('Start with the greenest area, then add one or more likely panel spots. Go back to Site Setup if you need to change fences, sheds, or trees.');
+      updatePlacementStatus('Tap the map once to add a likely panel spot. You can continue with one marker.');
       updatePlacementGuide();
       return initMap(location, token);
     })
@@ -978,8 +985,8 @@ function updatePlacementGuide() {
 
   if (summaryEl) {
     summaryEl.textContent = spaceCount > 0
-      ? `${spaceCount} candidate spot${spaceCount === 1 ? '' : 's'} added. Continue or add more if you want a stronger comparison.`
-      : 'Start with the greener parts of the map, then drop two or three likely panel spots to compare.';
+      ? `${spaceCount} spot${spaceCount === 1 ? '' : 's'} added. Continue now, or add another only if you want to compare.`
+      : 'Choose the surface, then tap the map once where the panels could go.';
   }
 
   setGuideStatus('placement-guide-heatmap-status', initialSceneReady ? 'Ready' : 'Loading', initialSceneReady);
