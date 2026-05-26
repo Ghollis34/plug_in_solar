@@ -142,7 +142,8 @@ export function render() {
               ${SPACE_TYPES.map((type) => `
                 <button class="space-type-btn ${type.id === 'ground' ? 'active' : ''}" data-type="${type.id}">
                   <span class="type-icon">${type.icon}</span>
-                  ${type.label}
+                  <span class="space-type-label">${escapeHtml(type.label)}</span>
+                  <span class="space-type-description">${escapeHtml(type.description)}</span>
                 </button>
               `).join('')}
             </div>
@@ -260,6 +261,8 @@ function initMap(location, token) {
     zoom: 18.6,
     pitch: 55,
     bearing: -24,
+    satelliteDefault: true,
+    interactionHintText: 'Use the satellite view to match the roof or garden area, then choose one obvious panel spot. You can add more later if you want a comparison.',
     onLoad: (mapInstance) => {
       map = mapInstance;
       if (!mapSession.isCurrent(token)) {
@@ -964,7 +967,7 @@ function updatePlacementActionLabel(typeId) {
   if (!button) return;
 
   const typeInfo = getSpaceTypeInfo(typeId);
-  button.textContent = `📌 Add ${typeInfo.label} Spot`;
+  button.textContent = `📌 ${typeInfo.actionLabel || `Choose ${typeInfo.label} location`}`;
 }
 
 function updatePlacementGuide() {
