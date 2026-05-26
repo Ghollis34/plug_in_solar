@@ -10,6 +10,7 @@ import {
 } from '../utils/kit-pricing.js';
 import { buildScenario, assumesNoSolarSpill, usesFullSolarCapture } from '../utils/quote-model.js';
 import { formatCurrency, formatPayback } from '../utils/roi.js';
+import { splitRecommendedKits } from '../utils/kit-recommendations.js';
 import { escapeHtml, safeDataId } from '../utils/security.js';
 import { getState, setState } from '../utils/state.js';
 import {
@@ -25,6 +26,7 @@ import {
 let activeFilters = { wattage: 'all', brand: 'all' };
 let activeSort = 'output';
 let comparisonRequestId = 0;
+let showAllKits = false;
 let comparisonState = {
   status: 'idle',
   scenarios: [],
@@ -40,6 +42,7 @@ let pricingState = {
 export function render() {
   activeFilters = { wattage: 'all', brand: 'all' };
   activeSort = 'output';
+  showAllKits = false;
   comparisonState = {
     status: 'idle',
     scenarios: [],
@@ -130,6 +133,7 @@ export function init() {
   initFilters();
   initSortControls();
   initKitSelection();
+  initShowMoreKits();
   updateNextButton();
   loadKitPriceFeed(getSelectedOrRecommendedSpace()?.type || null);
   loadKitComparisons();
@@ -186,12 +190,12 @@ function renderComparisonSummary() {
     return `
       <div class="kit-comparison-header">
         <div>
-          <div class="results-kicker">Waiting for inputs</div>
-          <h3 class="results-usage-title">Choose a location and panel spot first</h3>
+          <div class="results-kicker">Recommended for you</div>
+          <h3 class="results-usage-title">Start with these 2–3 kits, then compare more only if you want to.</h3>
         </div>
-        <div class="map-panel-pill">Comparison paused</div>
+        <div class="map-panel-pill">${escapeHtml(getActiveSortLabel())}</div>
       </div>
-      <div class="analysis-note">The live ranking will appear here once the planner has a saved location and at least one suitable panel space.</div>
+      <div class="analysis-note">We rank the strongest options first using your saved panel spot, electricity use, and live pricing assumptions. The full catalogue is still available below.</div>
     `;
   }
 
@@ -259,10 +263,27 @@ function renderKitGrid(selectedId) {
     `;
   }
 
+  const kitSections = splitRecommendedKits(items, { showAll: showAllKits });
+  const visibleItems = [...kitSections.recommended, ...kitSections.extra];
+
   return `
-    <div class="kits-grid">
-      ${items.map((item, index) => renderKitCard(item, selectedId, index)).join('')}
+    <div class="kit-recommendation-lead">
+      <div>
+        <div class="results-kicker">Top recommendations</div>
+        <h3 class="results-usage-title">Start with the best 2–3 matches for your home.</h3>
+      </div>
+      <p class="analysis-note">We rank kits first so you do not have to compare every number at once. Open the full list only if you want more choice.</p>
     </div>
+    <div class="kits-grid">
+      ${visibleItems.map((item, index) => renderKitCard(item, selectedId, index)).join('')}
+    </div>
+    ${kitSections.isLimited ? `
+      <div class="kit-show-more-wrap">
+        <button class="btn btn-secondary" type="button" id="show-more-kits">
+          Show ${kitSections.hiddenCount} more kit${kitSections.hiddenCount === 1 ? '' : 's'}
+        </button>
+      </div>
+    ` : ''}
   `;
 }
 
@@ -469,6 +490,7 @@ function refreshComparisonUi() {
   }
 
   initKitSelection();
+  initShowMoreKits();
   updateNextButton();
 }
 
@@ -496,11 +518,22 @@ function initSortControls() {
       if (!nextSort) return;
 
       activeSort = nextSort;
+      showAllKits = false;
       document.querySelectorAll('.filter-chip[data-sort]').forEach((entry) => {
         entry.classList.toggle('active', entry.dataset.sort === nextSort);
       });
       refreshComparisonUi();
     });
+  });
+}
+
+function initShowMoreKits() {
+  const button = document.getElementById('show-more-kits');
+  if (!button) return;
+
+  button.addEventListener('click', () => {
+    showAllKits = true;
+    refreshComparisonUi();
   });
 }
 

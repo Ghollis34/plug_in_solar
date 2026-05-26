@@ -917,6 +917,29 @@ body.map-placement-banner-active .satellite-toggle-btn {
 }
 
 /* --- Kit Cards --- */
+.kit-recommendation-lead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 18px;
+  padding: 18px 20px;
+  border-radius: 22px;
+  background: rgba(14, 19, 31, 0.62);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.kit-recommendation-lead .analysis-note {
+  max-width: 430px;
+  margin: 0;
+}
+
+.kit-show-more-wrap {
+  display: flex;
+  justify-content: center;
+  margin-top: 18px;
+}
+
 .kits-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
@@ -2247,6 +2270,14 @@ body.map-placement-banner-active .satellite-toggle-btn {
 
   .features-grid {
     grid-template-columns: 1fr;
+  }
+
+  .kit-recommendation-lead {
+    flex-direction: column;
+  }
+
+  .kit-recommendation-lead .analysis-note {
+    max-width: none;
   }
 
   .kits-grid {
