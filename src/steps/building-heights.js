@@ -87,7 +87,7 @@ export function render() {
                 <span class="task-guide-index">1</span>
                 <div class="task-guide-copy">
                   <strong>Add fixed shade obstacles</strong>
-                  <span>Draw fences, trees, and sheds that might block sunlight where panels could go.</span>
+                  <span>Mark only obvious shade sources near the likely panel area. You can skip this if you are not sure.</span>
                 </div>
                 <span class="task-guide-status" id="site-guide-obstacles-status">Optional</span>
               </div>
@@ -113,7 +113,7 @@ export function render() {
           <div class="card-flat card-flat-subtle" style="padding: 12px; margin-bottom: 12px;">
             <div style="font-weight: 600; margin-bottom: 4px;">What to add here</div>
             <div style="font-size: 0.85rem; color: var(--text-secondary);">
-              Draw fences, sheds, and trees that are fixed parts of the site. The next step is only for candidate panel locations.
+              Add only fixed items that may shade the panels, such as a straight fence section, tree, shed, or high wall. If nothing obvious is nearby, continue without adding any.
             </div>
           </div>
 
@@ -145,7 +145,7 @@ export function render() {
           <div class="card-flat card-flat-subtle obstacle-help-card">
             <div class="task-guide-title">Adding Obstacles</div>
             <div class="task-guide-summary" id="obstacle-tool-help">
-              Click “Draw Fence”, then click the start and end of the fence line on the map.
+              Mark a straight fence or boundary line by tapping the start and end. This step is optional and approximate.
             </div>
           </div>
 
@@ -200,7 +200,7 @@ export function render() {
           </div>
 
           <button class="btn btn-primary w-full mb-md" id="btn-place-obstacle">
-            🟧 Draw Fence On Map
+            🟧 Mark Straight Fence Line
           </button>
           <button class="btn btn-secondary w-full mb-md hidden" id="btn-cancel-fence">
             ✕ Cancel Drawing
@@ -631,9 +631,8 @@ function setActiveObstacleTool(tool) {
 
   const actionBtn = document.getElementById('btn-place-obstacle');
   if (actionBtn) {
-    if (activeObstacleTool === 'tree') actionBtn.textContent = '🌳 Place Tree On Map';
-    else if (activeObstacleTool === 'shed') actionBtn.textContent = '⬜ Place Shed / Wall On Map';
-    else actionBtn.textContent = '🟧 Draw Fence On Map';
+    const toolConfig = OBSTACLE_TOOLS.find((entry) => entry.id === activeObstacleTool);
+    actionBtn.textContent = `${toolConfig?.icon || ''} ${toolConfig?.actionLabel || 'Mark on map'}`.trim();
   }
 
   updateObstacleToolHelp();
@@ -920,17 +919,8 @@ function updateObstacleToolHelp() {
   const helpEl = document.getElementById('obstacle-tool-help');
   if (!helpEl) return;
 
-  if (activeObstacleTool === 'tree') {
-    helpEl.textContent = 'Use this for trees that could shade the panels. Set the height and canopy size first, then click roughly where the trunk meets the ground.';
-    return;
-  }
-
-  if (activeObstacleTool === 'shed') {
-    helpEl.textContent = 'Use this for sheds or garden walls. Set the front face direction first, then click the centre of the structure on the map.';
-    return;
-  }
-
-  helpEl.textContent = 'Use this for fences or side boundaries that could cast shade. Click “Draw Fence”, then click the start and end of the fence line.';
+  const toolConfig = OBSTACLE_TOOLS.find((entry) => entry.id === activeObstacleTool);
+  helpEl.textContent = toolConfig?.helpText || 'Mark anything that may shade the panel area. Approximate is fine, and you can skip this step if you are not sure.';
 }
 
 function setGuideStatus(elementId, label, done = false) {
