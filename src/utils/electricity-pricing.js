@@ -13,12 +13,15 @@ export function resolveElectricityPricing(location = null, customUnitRatePence =
   const customRate = normalizeCustomUnitRatePence(customUnitRatePence);
   const defaultRate = normalizeCustomUnitRatePence(config.electricityPrice) ?? 24.67;
 
+  const source = customRate == null ? config.electricityPriceSource : 'User-entered electricity price';
+
   return {
     unitRatePence: customRate ?? defaultRate,
     unitRate: (customRate ?? defaultRate) / 100,
     mode: customRate == null ? 'default' : 'custom',
     region: resolveRegionLabel(location),
-    source: customRate == null ? config.electricityPriceSource : 'User-entered electricity price',
+    source,
+    sourceDetail: source,
     updated: customRate == null ? config.electricityPriceUpdated : null,
   };
 }

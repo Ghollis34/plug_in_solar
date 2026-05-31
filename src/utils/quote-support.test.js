@@ -40,4 +40,26 @@ describe('quote support modules', () => {
     expect(scenario.roi).toMatchObject({ roiPercent: expect.any(Number) });
     expect(usesFullSolarCapture({ hasBattery: true })).toBe(true);
   });
+
+  it('exposes display-safe pricing source detail for result disclaimers', () => {
+    expect(resolveElectricityPricing(null, 30)).toMatchObject({
+      source: 'User-entered electricity price',
+      sourceDetail: 'User-entered electricity price',
+    });
+  });
+
+  it('reports smart tariff shifted kWh separately from solar shifted later', () => {
+    const batteryKit = getPricedKits().find((kit) => kit.hasBattery && kit.supportsSmartTariffShifting);
+    const scenario = buildScenario(batteryKit, { annualKwh: 700 }, {
+      baselineFactor: 1,
+      conservativeFactor: 0.9,
+      optimisticFactor: 1,
+      annualUsageKwh: 2700,
+      pricing: resolveElectricityPricing(null, 25),
+    });
+
+    expect(scenario.valueModel.smartTariffSavings).toBeGreaterThan(0);
+    expect(scenario.valueModel.smartTariffShiftKwh).toBeGreaterThan(0);
+    expect(Number.isFinite(scenario.valueModel.smartTariffShiftKwh)).toBe(true);
+  });
 });

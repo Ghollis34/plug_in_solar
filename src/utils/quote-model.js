@@ -90,7 +90,8 @@ function buildValueModel(kit, annualKwh, annualUsageKwh, pricing) {
   const exportKwh = Math.max(0, round(annualKwh - selfUsedKwh, 1));
   const billSavings = round(selfUsedKwh * (unitRatePence / 100), 2);
   const exportIncome = round(exportKwh * (exportRatePence / 100), 2);
-  const smartTariffSavings = getSmartTariffSavings(kit, annualUsageKwh, unitRatePence);
+  const smartTariffShiftKwh = getSmartTariffShiftKwh(kit, annualUsageKwh);
+  const smartTariffSavings = getSmartTariffSavings(kit, annualUsageKwh, unitRatePence, smartTariffShiftKwh);
   const annualValue = round(billSavings + exportIncome + smartTariffSavings, 2);
 
   return {
@@ -100,6 +101,7 @@ function buildValueModel(kit, annualKwh, annualUsageKwh, pricing) {
     selfUsedKwh,
     exportKwh,
     shiftedKwh: kit?.hasBattery ? round(Math.min(exportKwh, (kit.batteryCapacityWh || 0) / 1000 * 220), 1) : 0,
+    smartTariffShiftKwh,
     smartTariffSavings,
     annualValuePerKwh: annualKwh > 0 ? annualValue / annualKwh : unitRatePence / 100,
     unitRatePence,
@@ -118,15 +120,19 @@ function getSelfUseRatio(kit, annualKwh, annualUsageKwh) {
   return clamp(base + Math.min(0.12, demandRatio * 0.02), config.solarSelfUseMinRatio ?? 0.72, config.solarSelfUseMaxRatio ?? 0.96);
 }
 
-function getSmartTariffSavings(kit, annualUsageKwh, unitRatePence) {
+function getSmartTariffShiftKwh(kit, annualUsageKwh) {
   if (!kit?.hasBattery || !kit?.supportsSmartTariffShifting) return 0;
-  const offPeak = config.smartTariffOffPeakPrice ?? 0;
-  const spread = Math.max(0, unitRatePence - offPeak) / 100;
   const batteryKwh = (kit.batteryCapacityWh || 0) / 1000;
   const activeDays = config.smartTariffActiveDaysBase ?? 300;
   const cycleRatio = config.smartTariffBatteryCycleRatio ?? 0.8;
-  const annualShiftedKwh = Math.min(annualUsageKwh * 0.35, batteryKwh * activeDays * cycleRatio);
-  return round(annualShiftedKwh * spread, 2);
+  return round(Math.min(annualUsageKwh * 0.35, batteryKwh * activeDays * cycleRatio), 1);
+}
+
+function getSmartTariffSavings(kit, annualUsageKwh, unitRatePence, smartTariffShiftKwh = getSmartTariffShiftKwh(kit, annualUsageKwh)) {
+  if (!kit?.hasBattery || !kit?.supportsSmartTariffShifting) return 0;
+  const offPeak = config.smartTariffOffPeakPrice ?? 0;
+  const spread = Math.max(0, unitRatePence - offPeak) / 100;
+  return round(smartTariffShiftKwh * spread, 2);
 }
 
 function clamp(value, min, max) {
