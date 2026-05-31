@@ -10,6 +10,8 @@
   "exportTariffSource": "Plug-in solar quote assumption: no current export payment",
   "quoteAssumptionMode": "balanced",
   "pvgisProxyUrl": "",
+  "referralRedirectBaseUrl": "",
+  "referralTrackingEndpoint": "",
   "assumeNoSolarSpill": false,
   "pvgisSystemLossPercent": 5,
   "resultsConservativeShadowDelta": 0.1,

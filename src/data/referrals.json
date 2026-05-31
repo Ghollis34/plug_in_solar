@@ -1,0 +1,86 @@
+{
+  "disclosure": "SolarSpot may earn a commission from selected partner links. This does not change the price you pay.",
+  "partners": {
+    "ecoflow": {
+      "name": "EcoFlow",
+      "status": "affiliate-pending",
+      "allowedHosts": ["uk.ecoflow.com", "ecoflow.com"],
+      "defaultLabel": "View EcoFlow partner offer",
+      "trackingType": "url-template",
+      "urlTemplate": "https://uk.ecoflow.com/products/{slug}?utm_source=solarspot&utm_medium=referral&utm_campaign={campaign}",
+      "notes": "Replace product slugs and tracking template with the approved EcoFlow affiliate/deep-link format once the account is approved."
+    },
+    "thunder-energy": {
+      "name": "Thunder Energy",
+      "status": "direct-pending",
+      "allowedHosts": ["thunderenergy.co.uk"],
+      "defaultLabel": "View Thunder Energy store",
+      "trackingType": "direct",
+      "notes": "No confirmed affiliate scheme yet. Use direct retailer links until a direct referral agreement exists."
+    },
+    "zendure": {
+      "name": "Zendure",
+      "status": "affiliate-pending",
+      "allowedHosts": ["zendure.com", "uk.zendure.com"],
+      "defaultLabel": "View Zendure partner offer",
+      "trackingType": "url-template",
+      "urlTemplate": "https://zendure.com/products/{slug}?utm_source=solarspot&utm_medium=referral&utm_campaign={campaign}",
+      "notes": "Replace slugs/template with the approved Zendure affiliate network URL once available."
+    },
+    "anker": {
+      "name": "Anker SOLIX",
+      "status": "direct-pending",
+      "allowedHosts": ["anker.com"],
+      "defaultLabel": "View Anker store",
+      "trackingType": "direct",
+      "notes": "Anker UK URLs are now allowed. Add affiliate/deep-link details when approved."
+    },
+    "amazon-uk": {
+      "name": "Amazon UK",
+      "status": "affiliate-pending",
+      "allowedHosts": ["amazon.co.uk"],
+      "defaultLabel": "View on Amazon",
+      "trackingType": "amazon-tag",
+      "tag": "YOUR_AMAZON_ASSOCIATES_TAG",
+      "notes": "Placeholder only. Do not publish Amazon affiliate links until the Associates tag and compliance text are confirmed."
+    }
+  },
+  "kits": {
+    "ecoflow-powerstream-400": {
+      "partner": "ecoflow",
+      "slug": "powerstream-microinverter"
+    },
+    "ecoflow-powerstream-800": {
+      "partner": "ecoflow",
+      "slug": "powerstream-microinverter"
+    },
+    "ecoflow-powerstream-800-battery": {
+      "partner": "ecoflow",
+      "slug": "powerstream-balcony-solar-system"
+    },
+    "thunder-storm-360": {
+      "partner": "thunder-energy"
+    },
+    "thunder-storm-710": {
+      "partner": "thunder-energy"
+    },
+    "zendure-solarflow-400": {
+      "partner": "zendure",
+      "slug": "solarflow"
+    },
+    "zendure-solarflow-800": {
+      "partner": "zendure",
+      "slug": "solarflow"
+    },
+    "zendure-solarflow-800-battery": {
+      "partner": "zendure",
+      "slug": "solarflow-hyper-2000"
+    },
+    "anker-solix-400": {
+      "partner": "anker"
+    },
+    "anker-solix-800": {
+      "partner": "anker"
+    }
+  }
+}

@@ -1596,6 +1596,21 @@ body.map-placement-banner-active .satellite-toggle-btn {
   min-width: 220px;
 }
 
+.referral-disclosure {
+  margin: -18px 0 28px;
+  padding: 10px 12px;
+  border: 1px solid rgba(245, 158, 11, 0.24);
+  border-radius: var(--radius-sm);
+  background: rgba(245, 158, 11, 0.08);
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.referral-disclosure strong {
+  color: var(--text-primary);
+}
+
 /* Chart Containers */
 .chart-container {
   background: var(--bg-card);

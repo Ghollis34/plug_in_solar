@@ -10,9 +10,11 @@ import {
 } from '../utils/kit-pricing.js';
 import { formatCurrency, formatPayback } from '../utils/roi.js';
 import config from '../data/config.json';
+import referralConfig from '../data/referrals.json';
 import { escapeHtml, safeDataId, sanitizeExternalUrl } from '../utils/security.js';
 import { normalizeCustomUnitRatePence } from '../utils/electricity-pricing.js';
 import { ALLOWED_RETAILER_HOSTS, resolveRetailerLink } from '../utils/referrals.js';
+import { trackReferralClick } from '../utils/referral-events.js';
 import { buildScenario, hasExportPayment, usesFullSolarCapture } from '../utils/quote-model.js';
 import { getQuoteAssumptionProfile, QUOTE_ASSUMPTION_MODE_OPTIONS } from '../utils/quote-assumptions.js';
 import {
@@ -518,8 +520,8 @@ function displayResults({ primaryScenario, upgradeScenario, selectedSpace, recom
     </div>
   `;
 
-  renderBatteryUpgrade(primaryScenario, upgradeScenario);
-  renderResultActions(primaryScenario);
+  renderBatteryUpgrade(primaryScenario, upgradeScenario, quoteAssumptionMode);
+  renderResultActions(primaryScenario, quoteAssumptionMode);
 
   animateCounters();
   renderMonthlyChart(adjusted, solarData);
@@ -559,7 +561,7 @@ function removeResultsStickyActions() {
   }
 }
 
-function renderBatteryUpgrade(primaryScenario, upgradeScenario) {
+function renderBatteryUpgrade(primaryScenario, upgradeScenario, quoteAssumptionMode) {
   const slot = document.getElementById('battery-upgrade-slot');
   if (!slot) return;
   const primaryFullCapture = usesFullSolarCapture(primaryScenario.kit, { assumptionMode: primaryScenario.assumptionMode });
@@ -611,7 +613,11 @@ function renderBatteryUpgrade(primaryScenario, upgradeScenario) {
   const costDelta = upgradeScenario.kit.price - primaryScenario.kit.price;
   const smartTariffGain = upgradeScenario.valueModel.smartTariffSavings - primaryScenario.valueModel.smartTariffSavings;
   const upgradeHasSmartTariff = smartTariffGain > 0;
-  const upgradeLink = resolveRetailerLink(upgradeScenario.kit.storeUrl);
+  const upgradeLink = resolveRetailerLink(upgradeScenario.kit, {
+    referralConfig,
+    campaign: 'battery-upgrade',
+    redirectBaseUrl: config.referralRedirectBaseUrl,
+  });
 
   slot.innerHTML = `
     <div class="card battery-upgrade-card">
@@ -655,7 +661,8 @@ function renderBatteryUpgrade(primaryScenario, upgradeScenario) {
         ${renderExternalAction(
           upgradeLink,
           upgradeLink.usesAffiliateLink ? 'View Battery Partner Offer →' : 'View Battery Combo →',
-          'btn btn-outline'
+          'btn btn-outline',
+          { referralSource: 'battery-upgrade' }
         )}
       </div>
     </div>
@@ -666,15 +673,25 @@ function renderBatteryUpgrade(primaryScenario, upgradeScenario) {
     resetResultsForRecalculation();
     calculateResults();
   });
+
+  attachReferralTracking(upgradeLink, upgradeScenario, quoteAssumptionMode, 'battery-upgrade');
 }
 
-function renderResultActions(primaryScenario) {
+function renderResultActions(primaryScenario, quoteAssumptionMode) {
   const actionsEl = document.getElementById('results-actions');
   const stickyActionsEl = ensureResultsStickyActions();
   if (!actionsEl) return;
-  const primaryLink = resolveRetailerLink(primaryScenario.kit.storeUrl);
-  const actionLabel = primaryLink.usesAffiliateLink ? 'View Partner Offer →' : `View ${primaryScenario.kit.brand || 'Retailer'} Store →`;
-  const actionHtml = renderExternalAction(primaryLink, actionLabel, 'btn btn-primary');
+  const primaryLink = resolveRetailerLink(primaryScenario.kit, {
+    referralConfig,
+    campaign: 'results-primary',
+    redirectBaseUrl: config.referralRedirectBaseUrl,
+  });
+  const actionLabel = primaryLink.usesAffiliateLink
+    ? 'View Partner Offer →'
+    : `View ${primaryScenario.kit.brand || 'Retailer'} Store →`;
+  const actionHtml = renderExternalAction(primaryLink, actionLabel, 'btn btn-primary', { referralSource: 'results-primary' });
+  const stickyActionHtml = renderExternalAction(primaryLink, actionLabel, 'btn btn-primary', { referralSource: 'sticky-cta' });
+  const referralDisclosure = renderReferralDisclosure(primaryLink);
 
   actionsEl.innerHTML = `
     <div class="result-actions">
@@ -683,6 +700,7 @@ function renderResultActions(primaryScenario) {
         Refresh This Quote
       </button>
     </div>
+    ${referralDisclosure}
   `;
 
   if (stickyActionsEl) {
@@ -692,7 +710,7 @@ function renderResultActions(primaryScenario) {
         <span>Ready to buy or compare the recommended partner kit.</span>
       </div>
       <div class="results-sticky-buttons">
-        ${actionHtml}
+        ${stickyActionHtml}
       </div>
     `;
   }
@@ -706,6 +724,9 @@ function renderResultActions(primaryScenario) {
     resetResultsForRecalculation();
     calculateResults();
   });
+
+  attachReferralTracking(primaryLink, primaryScenario, quoteAssumptionMode, 'results-primary');
+  attachReferralTracking(primaryLink, primaryScenario, quoteAssumptionMode, 'sticky-cta');
 }
 
 function renderMonthlyChart(adjusted, solarData) {
@@ -1239,18 +1260,59 @@ function formatRatePence(value) {
   });
 }
 
-function renderExternalAction(linkInfoOrUrl, label, className) {
+function renderReferralDisclosure(linkInfo) {
+  if (!linkInfo?.disclosure) return '';
+  const linkType = linkInfo.usesAffiliateLink ? 'Partner link' : 'Retailer link';
+  return `
+    <div class="referral-disclosure">
+      <strong>${escapeHtml(linkType)}:</strong> ${escapeHtml(linkInfo.disclosure)}
+    </div>
+  `;
+}
+
+function attachReferralTracking(linkInfo, scenario, quoteAssumptionMode, source) {
+  const links = document.querySelectorAll(`[data-referral-source="${source}"]`);
+  if (!links.length) return;
+
+  const quoteContext = buildReferralQuoteContext(scenario, quoteAssumptionMode);
+  links.forEach((link) => {
+    link.addEventListener('click', () => {
+      void trackReferralClick({
+        linkInfo,
+        kit: scenario.kit,
+        endpoint: config.referralTrackingEndpoint,
+        quoteContext,
+        source,
+      });
+    });
+  });
+}
+
+function buildReferralQuoteContext(scenario, quoteAssumptionMode) {
+  return {
+    assumptionMode: quoteAssumptionMode,
+    annualValue: scenario.valueModel?.annualValue,
+    paybackYears: scenario.roi?.paybackYears,
+    annualKwh: scenario.adjusted?.annualKwh,
+    hasBattery: scenario.kit?.hasBattery,
+  };
+}
+
+function renderExternalAction(linkInfoOrUrl, label, className, options = {}) {
   const linkInfo = typeof linkInfoOrUrl === 'string'
     ? { url: linkInfoOrUrl, usesAffiliateLink: false }
     : linkInfoOrUrl;
   const safeUrl = linkInfo?.usesAffiliateLink
     ? sanitizeExternalUrl(linkInfo?.url)
     : sanitizeExternalUrl(linkInfo?.url, { allowedHosts: ALLOWED_RETAILER_HOSTS });
+  const referralAttributes = options.referralSource
+    ? ` data-referral-source="${escapeHtml(options.referralSource)}"`
+    : '';
   if (!safeUrl) {
     return `<button class="${className}" type="button" disabled>${escapeHtml(label)}</button>`;
   }
 
-  return `<a href="${escapeHtml(safeUrl)}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" class="${className}">${escapeHtml(label)}</a>`;
+  return `<a href="${escapeHtml(safeUrl)}" target="_blank" rel="noopener noreferrer" referrerpolicy="strict-origin-when-cross-origin" class="${className}"${referralAttributes}>${escapeHtml(label)}</a>`;
 }
 
 function formatCurrencyRange(valueA, valueB) {
