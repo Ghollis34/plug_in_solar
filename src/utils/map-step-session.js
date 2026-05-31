@@ -68,6 +68,7 @@ export function createMapStepSession() {
         map = runtime.createStepMap({
           ...options,
           onLoad: (loadedMap) => {
+            requestAnimationFrame(() => loadedMap?.resize?.());
             Promise.resolve()
               .then(() => handleLoad?.(loadedMap))
               .then(() => {

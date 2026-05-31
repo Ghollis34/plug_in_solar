@@ -30,6 +30,14 @@ const OBSTACLE_SHED_FILL_ID = 'obstacle-sheds';
 const OBSTACLE_SHED_OUTLINE_ID = 'obstacle-shed-outline';
 const MAP_INTERACTION_HINT_CLASS = 'map-interaction-hint';
 const EMPTY_FEATURE_COLLECTION = { type: 'FeatureCollection', features: [] };
+const EARTH_CIRCUMFERENCE_M = 40075016.686;
+const MAPLIBRE_TILE_SIZE_PX = 512;
+const STANDARD_PANEL_WIDTH_M = 1.76;
+const STANDARD_PANEL_HEIGHT_M = 1.13;
+const PANEL_MARKER_MIN_WIDTH_PX = 6;
+const PANEL_MARKER_MAX_WIDTH_PX = 44;
+const PANEL_MARKER_COMPACT_MIN_WIDTH_PX = 5;
+const PANEL_MARKER_COMPACT_MAX_WIDTH_PX = 36;
 
 const ESRI_TILE_URL = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
 const ESRI_ATTRIBUTION = 'Powered by Esri | Sources: Esri, Vantor, Earthstar Geographics, GIS User Community';
@@ -451,35 +459,75 @@ export function createPanelMarkerElement(space, options = {}) {
   const grid = document.createElement('span');
   grid.className = 'panel-marker-grid';
 
-  const icon = document.createElement('span');
-  icon.className = 'panel-marker-icon';
-  icon.textContent = space.typeIcon || '☀️';
+  const cells = document.createElement('span');
+  cells.className = 'panel-marker-cells';
 
-  card.append(grid, icon);
+  card.append(grid, cells);
   el.append(halo, surface, card);
 
   if (typeof options.onClick === 'function') {
     el.addEventListener('click', options.onClick);
   }
 
-  updatePanelMarkerElement(el, space, { selected: options.selected === true });
+  updatePanelMarkerElement(el, space, {
+    selected: options.selected === true,
+    zoom: options.zoom,
+    lat: options.lat,
+  });
   return el;
 }
 
 export function updatePanelMarkerElement(element, space, options = {}) {
   const rotation = options.rotation ?? space.displayRotation ?? space.orientation ?? 180;
   const selected = options.selected === true;
+  const compact = element.classList.contains('panel-marker-compact');
+  const visualSize = getPanelMarkerVisualSize({
+    zoom: options.zoom,
+    lat: options.lat ?? space.centerLat,
+    compact,
+  });
 
   element.classList.toggle('selected', selected);
   element.style.setProperty('--panel-rotation', `${rotation}deg`);
+  element.style.setProperty('--panel-card-width', `${visualSize.widthPx}px`);
+  element.style.setProperty('--panel-card-height', `${visualSize.heightPx}px`);
+  element.style.setProperty('--panel-surface-width', `${Math.max(visualSize.widthPx + 8, 14)}px`);
   element.setAttribute('aria-label', `${space.name || 'Panel location'} marker`);
   element.dataset.spaceType = space.type || 'ground';
   element.dataset.surfaceAligned = space.surfaceAligned ? 'true' : 'false';
+  element.dataset.markerScale = 'true-size';
 
-  const icon = element.querySelector('.panel-marker-icon');
-  if (icon) {
-    icon.textContent = space.typeIcon || '☀️';
+}
+
+export function getPanelMarkerVisualSize(options = {}) {
+  const compact = options.compact === true;
+  const minWidth = compact ? PANEL_MARKER_COMPACT_MIN_WIDTH_PX : PANEL_MARKER_MIN_WIDTH_PX;
+  const maxWidth = compact ? PANEL_MARKER_COMPACT_MAX_WIDTH_PX : PANEL_MARKER_MAX_WIDTH_PX;
+  const zoom = Number.isFinite(options.zoom) ? clamp(options.zoom, 0, DEFAULT_INTERACTIVE_MAX_ZOOM) : 18.5;
+  const lat = Number.isFinite(options.lat) ? clamp(options.lat, -85, 85) : 52;
+  const widthM = Number.isFinite(options.widthM) ? options.widthM : STANDARD_PANEL_WIDTH_M;
+  const heightM = Number.isFinite(options.heightM) ? options.heightM : STANDARD_PANEL_HEIGHT_M;
+  const latitudeScale = Math.max(Math.cos((lat * Math.PI) / 180), 0.087);
+  const metersPerPixel = (latitudeScale * EARTH_CIRCUMFERENCE_M) / (MAPLIBRE_TILE_SIZE_PX * (2 ** zoom));
+
+  if (!Number.isFinite(metersPerPixel) || metersPerPixel <= 0) {
+    return {
+      widthPx: minWidth,
+      heightPx: Math.max(4, roundToTenth(minWidth * (heightM / widthM))),
+    };
   }
+
+  const widthPx = clamp(widthM / metersPerPixel, minWidth, maxWidth);
+  const heightPx = clamp(heightM / metersPerPixel, Math.max(4, minWidth * (heightM / widthM)), maxWidth * (heightM / widthM));
+
+  return {
+    widthPx: roundToTenth(widthPx),
+    heightPx: roundToTenth(heightPx),
+  };
+}
+
+function roundToTenth(value) {
+  return Math.round(value * 10) / 10;
 }
 
 export function captureNearbyBuildings(map, center, options = {}) {

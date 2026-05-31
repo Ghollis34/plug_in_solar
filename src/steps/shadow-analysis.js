@@ -2,6 +2,7 @@ import { setState } from '../utils/state.js';
 import { getSunTimes, getMapLightFromSun, getShadowOverlayFeatures, rankSpaces, samplePlacementHeatmap } from '../utils/sun.js';
 import { escapeHtml } from '../utils/security.js';
 import { createMapStepSession } from '../utils/map-step-session.js';
+import { getShadowGuidance } from '../utils/shadow-guidance.js';
 import {
   getAnalysisCenter,
   getBuildingsState,
@@ -95,25 +96,38 @@ export function render() {
         </div>
 
         <div class="map-overlay-panel map-overlay-panel-right map-overlay-panel-ranking">
+          <div id="shadow-guidance-card" class="shadow-guidance-card shadow-guidance-pending">
+            <div class="shadow-guidance-kicker">Sunlight estimate</div>
+            <h3 id="shadow-guidance-title">Checking sunlight</h3>
+            <p id="shadow-guidance-summary">We are comparing the panel spots you marked and estimating how much shade may affect them.</p>
+            <p id="shadow-guidance-action">Keep the shadow map open while the estimate finishes.</p>
+          </div>
+
           <div id="best-spot-result" class="hidden">
             <div class="sun-score">
               <div class="sun-score-value" id="best-spot-hours">--</div>
-              <div class="sun-score-label" id="best-spot-label">Analysing annual direct sun...</div>
+              <div class="sun-score-label" id="best-spot-label">Checking yearly sunlight...</div>
             </div>
             <div class="analysis-note" id="best-spot-meta" style="margin-top: 8px;"></div>
           </div>
 
-          <div class="analysis-note" style="margin-top: 10px;">
-            Green heatmap areas have the strongest year-round direct sun. Rankings use annual average direct sun, while the month and time controls only change the live shadow preview.
-          </div>
+          <p class="analysis-note shadow-reassurance-note">
+            This is an estimate based on the location and any obvious shade sources you marked. It helps compare possible spots, but it does not need to be perfect.
+          </p>
 
-          <div id="spaces-ranking" class="hidden"></div>
+          <details class="shadow-details-panel">
+            <summary>Show detailed shadow analysis</summary>
+            <div class="analysis-note">
+              Green heatmap areas have the strongest year-round direct sun. Rankings use yearly average direct sun, while the month and time controls only change the live shadow preview.
+            </div>
+            <div id="spaces-ranking" class="hidden"></div>
+          </details>
         </div>
       </div>
 
       <div class="step-footer">
-        <button class="btn btn-secondary" id="btn-back-shadow">← Back</button>
-        <button class="btn btn-primary" id="btn-next-shadow">Continue →</button>
+        <button class="btn btn-secondary" id="btn-back-shadow">← Try another location</button>
+        <button class="btn btn-primary" id="btn-next-shadow">Continue to kit recommendations →</button>
       </div>
     </div>
   `;
@@ -170,6 +184,8 @@ function initMap(location, token) {
     onLoad: (mapInstance) => {
       map = mapInstance;
       addSpaceMarkers();
+      map.on('zoom', () => applyMarkerSelectionStyles());
+      map.on('moveend', () => applyMarkerSelectionStyles());
       mapRuntime.drawObstacles(map, getObstaclesState());
       const center = getAnalysisCenter(null, location);
       mapRuntime.drawSuitabilityHeatmap(map, samplePlacementHeatmap(center.lat, center.lng, getAnalysisBuildings(location), getObstaclesState()));
@@ -420,16 +436,27 @@ function renderSelectionSummary(ranked) {
   const hoursEl = document.getElementById('best-spot-hours');
   const labelEl = document.getElementById('best-spot-label');
   const metaEl = document.getElementById('best-spot-meta');
+  const guidanceCardEl = document.getElementById('shadow-guidance-card');
+  const guidanceTitleEl = document.getElementById('shadow-guidance-title');
+  const guidanceSummaryEl = document.getElementById('shadow-guidance-summary');
+  const guidanceActionEl = document.getElementById('shadow-guidance-action');
 
   if (!bestSpotEl || ranked.length === 0) return;
 
   const selected = ranked.find((space) => space.id === selectedSpaceId) || ranked[0];
   const recommended = ranked[0];
+  const guidance = getShadowGuidance(selected, recommended);
 
   bestSpotEl.classList.remove('hidden');
+  if (guidanceCardEl) {
+    guidanceCardEl.className = `shadow-guidance-card shadow-guidance-${sanitizeWarningLevel(guidance.level)}`;
+  }
+  if (guidanceTitleEl) guidanceTitleEl.textContent = guidance.title;
+  if (guidanceSummaryEl) guidanceSummaryEl.textContent = guidance.summary;
+  if (guidanceActionEl) guidanceActionEl.textContent = guidance.action;
   hoursEl.textContent = `${selected.avgDailyHours}h/day`;
-  labelEl.textContent = 'Annual average direct sun';
-  metaEl.textContent = `Using ${selected.name} for ROI · ${selected.relativeDirectionLabel} · ${capitalise(selected.confidence)} confidence · Shadow factor ${Math.round(selected.shadowFactor * 100)}%${selected.id !== recommended.id ? ` · Recommended spot is ${recommended.name}` : ''}`;
+  labelEl.textContent = 'Estimated direct sun per day';
+  metaEl.textContent = `Using ${selected.name} for the kit estimate · ${selected.relativeDirectionLabel} · ${capitalise(selected.confidence)} confidence${selected.id !== recommended.id ? ` · Sunniest marked spot is ${recommended.name}` : ''}`;
 }
 
 function selectSpace(spaceId) {
@@ -445,15 +472,19 @@ function applyMarkerSelectionStyles() {
   markers.forEach((entry) => {
     const isSelected = entry.id === selectedSpaceId;
     const space = getSpacesState().find((item) => item.id === entry.id) || { id: entry.id };
-    mapRuntime.updatePanelMarkerElement(entry.element, space, { selected: isSelected });
+    mapRuntime.updatePanelMarkerElement(entry.element, space, {
+      selected: isSelected,
+      zoom: map?.getZoom?.(),
+      lat: space.centerLat ?? map?.getCenter?.()?.lat,
+    });
     entry.marker.setLngLat(entry.marker.getLngLat());
   });
 }
 
 function resolveSelectedSpaceId(ranked) {
-  if (selectedSpaceId && ranked.some((space) => space.id === selectedSpaceId)) {
-    return selectedSpaceId;
-  }
+  // The shadow step should make the recommendation for the user, not ask them to
+  // interpret the rankings first. Always start the quote from the strongest
+  // sunlight location, while still allowing a manual card/marker override.
   return ranked[0]?.id || null;
 }
 

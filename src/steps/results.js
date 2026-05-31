@@ -30,6 +30,7 @@ import {
 
 let charts = [];
 let calculationRequestId = 0;
+const RESULTS_STICKY_ACTIONS_ID = 'results-sticky-actions';
 
 export function render() {
   const selectedKit = resolveSelectedKit(getState('selectedKit'));
@@ -494,10 +495,32 @@ function displayResults({ primaryScenario, upgradeScenario, selectedSpace, recom
       ? ''
       : 'This plug-in solar quote assumes excess electricity sent to the grid is unpaid.';
   document.getElementById('price-disclaimer').textContent = exportPaymentEnabled
-    ? `Based on ${pricing.sourceDetail}. The quote is currently using ${formatRatePence(pricing.unitRatePence)}${config.electricityPriceUnit}${pricing.standingChargePence != null ? `, with a regional standing charge reference of ${formatRatePence(pricing.standingChargePence)}p/day shown for context only.` : ''} Household usage is set to ${formatWholeNumber(annualUsageKwh)} kWh/year${usingDefaultAnnualUsage ? ` using the UK typical default from ${DEFAULT_ANNUAL_USAGE_SOURCE}` : ''}. Kit cost is ${formatCurrency(headlineRoi.kitCost)} from ${kitPriceStatus.toLowerCase()}. ${kitPriceDetail} Headline tiles show the best-case modelled outcome and smaller text shows the wider range.${spillDisclaimerCopy ? ` ${spillDisclaimerCopy}` : ''}${smartTariffIncluded ? ` Smart-tariff battery shifting is estimated using ${config.smartTariffOffPeakPrice}${config.smartTariffOffPeakPriceUnit} overnight import from ${config.smartTariffSource}.` : ''} ${storageAssumptionCopy}${annualValueGrowthCopy ? ` ${annualValueGrowthCopy}` : ''}`
-    : `Based on ${pricing.sourceDetail}. The quote is currently using ${formatRatePence(pricing.unitRatePence)}${config.electricityPriceUnit}${pricing.standingChargePence != null ? `, with a regional standing charge reference of ${formatRatePence(pricing.standingChargePence)}p/day shown for context only.` : ''} Household usage is set to ${formatWholeNumber(annualUsageKwh)} kWh/year${usingDefaultAnnualUsage ? ` using the UK typical default from ${DEFAULT_ANNUAL_USAGE_SOURCE}` : ''}. Kit cost is ${formatCurrency(headlineRoi.kitCost)} from ${kitPriceStatus.toLowerCase()}. ${kitPriceDetail} Headline tiles show the best-case modelled outcome and smaller text shows the wider range. ${spillDisclaimerCopy}${smartTariffIncluded ? ` Smart-tariff battery shifting is estimated using ${config.smartTariffOffPeakPrice}${config.smartTariffOffPeakPriceUnit} overnight import from ${config.smartTariffSource}.` : ''} ${storageAssumptionCopy}${annualValueGrowthCopy ? ` ${annualValueGrowthCopy}` : ''}`;
+    ? `Based on ${pricing.sourceDetail}. The quote is currently using ${formatRatePence(pricing.unitRatePence)}${config.electricityPriceUnit}${pricing.standingChargePence != null ? `, with a regional standing charge reference of ${formatRatePence(pricing.standingChargePence)}p/day shown for context only.` : '.'} Household usage is set to ${formatWholeNumber(annualUsageKwh)} kWh/year${usingDefaultAnnualUsage ? ` using the UK typical default from ${DEFAULT_ANNUAL_USAGE_SOURCE}` : ''}. Kit cost is ${formatCurrency(headlineRoi.kitCost)} from ${kitPriceStatus.toLowerCase()}. ${kitPriceDetail} Headline tiles show the best-case modelled outcome and smaller text shows the wider range.${spillDisclaimerCopy ? ` ${spillDisclaimerCopy}` : ''}${smartTariffIncluded ? ` Smart-tariff battery shifting is estimated using ${config.smartTariffOffPeakPrice}${config.smartTariffOffPeakPriceUnit} overnight import from ${config.smartTariffSource}.` : ''} ${storageAssumptionCopy}${annualValueGrowthCopy ? ` ${annualValueGrowthCopy}` : ''}`
+    : `Based on ${pricing.sourceDetail}. The quote is currently using ${formatRatePence(pricing.unitRatePence)}${config.electricityPriceUnit}${pricing.standingChargePence != null ? `, with a regional standing charge reference of ${formatRatePence(pricing.standingChargePence)}p/day shown for context only.` : '.'} Household usage is set to ${formatWholeNumber(annualUsageKwh)} kWh/year${usingDefaultAnnualUsage ? ` using the UK typical default from ${DEFAULT_ANNUAL_USAGE_SOURCE}` : ''}. Kit cost is ${formatCurrency(headlineRoi.kitCost)} from ${kitPriceStatus.toLowerCase()}. ${kitPriceDetail} Headline tiles show the best-case modelled outcome and smaller text shows the wider range. ${spillDisclaimerCopy}${smartTariffIncluded ? ` Smart-tariff battery shifting is estimated using ${config.smartTariffOffPeakPrice}${config.smartTariffOffPeakPriceUnit} overnight import from ${config.smartTariffSource}.` : ''} ${storageAssumptionCopy}${annualValueGrowthCopy ? ` ${annualValueGrowthCopy}` : ''}`;
 
   updateAssumptionUi();
+}
+
+function ensureResultsStickyActions() {
+  let stickyActionsEl = document.getElementById(RESULTS_STICKY_ACTIONS_ID);
+  if (stickyActionsEl) return stickyActionsEl;
+
+  stickyActionsEl = document.createElement('div');
+  stickyActionsEl.id = RESULTS_STICKY_ACTIONS_ID;
+  stickyActionsEl.className = 'results-sticky-actions';
+  stickyActionsEl.setAttribute('aria-live', 'polite');
+  stickyActionsEl.setAttribute('data-results-portal', 'true');
+  document.body.appendChild(stickyActionsEl);
+  return stickyActionsEl;
+}
+
+function removeResultsStickyActions() {
+  const stickyActionsEl = document.getElementById(RESULTS_STICKY_ACTIONS_ID);
+  if (stickyActionsEl?.dataset.resultsPortal === 'true') {
+    stickyActionsEl.remove();
+  } else if (stickyActionsEl) {
+    stickyActionsEl.innerHTML = '';
+  }
 }
 
 function renderBatteryUpgrade(primaryScenario, upgradeScenario) {
@@ -611,23 +634,39 @@ function renderBatteryUpgrade(primaryScenario, upgradeScenario) {
 
 function renderResultActions(primaryScenario) {
   const actionsEl = document.getElementById('results-actions');
+  const stickyActionsEl = ensureResultsStickyActions();
   if (!actionsEl) return;
   const primaryLink = resolveRetailerLink(primaryScenario.kit.storeUrl);
+  const actionLabel = primaryLink.usesAffiliateLink ? 'View Partner Offer →' : `View ${primaryScenario.kit.brand || 'Retailer'} Store →`;
+  const actionHtml = renderExternalAction(primaryLink, actionLabel, 'btn btn-primary');
 
   actionsEl.innerHTML = `
     <div class="result-actions">
-      ${renderExternalAction(
-        primaryLink,
-        primaryLink.usesAffiliateLink ? 'View Partner Offer →' : `View ${primaryScenario.kit.brand || 'Retailer'} Store →`,
-        'btn btn-primary'
-      )}
+      ${actionHtml}
       <button class="btn btn-outline" id="btn-recalc-results">
         Refresh This Quote
       </button>
     </div>
   `;
 
+  if (stickyActionsEl) {
+    stickyActionsEl.innerHTML = `
+      <div class="results-sticky-copy">
+        <strong>${escapeHtml(primaryScenario.kit.name)}</strong>
+        <span>Ready to buy or compare the recommended partner kit.</span>
+      </div>
+      <div class="results-sticky-buttons">
+        ${actionHtml}
+      </div>
+    `;
+  }
+
   document.getElementById('btn-recalc-results')?.addEventListener('click', () => {
+    resetResultsForRecalculation();
+    calculateResults();
+  });
+
+  document.getElementById('btn-sticky-refresh-results')?.addEventListener('click', () => {
     resetResultsForRecalculation();
     calculateResults();
   });
@@ -637,8 +676,9 @@ function renderMonthlyChart(adjusted, solarData) {
   const ctx = document.getElementById('chart-monthly');
   if (!ctx) return;
 
-  const labels = adjusted.months.map((month) => month.monthName);
-  const data = adjusted.months.map((month) => month.adjustedKwh);
+  const monthlyData = buildMonthlyChartData(adjusted, solarData);
+  const labels = monthlyData.map((month) => month.monthName);
+  const data = monthlyData.map((month) => month.adjustedKwh);
 
   const chart = new Chart(ctx, {
     type: 'bar',
@@ -687,6 +727,46 @@ function renderMonthlyChart(adjusted, solarData) {
   });
 
   charts.push(chart);
+}
+
+function buildMonthlyChartData(adjusted = {}, solarData = {}) {
+  if (Array.isArray(adjusted.months) && adjusted.months.length > 0) {
+    return adjusted.months.map((month, index) => ({
+      monthName: month.monthName || getMonthShortName(index),
+      adjustedKwh: Number.isFinite(month.adjustedKwh) ? month.adjustedKwh : 0,
+    }));
+  }
+
+  const sourceMonths = Array.isArray(solarData.months) && solarData.months.length > 0
+    ? solarData.months
+    : MONTH_NAMES.map((monthName, index) => ({ monthName, kwhPerKwp: 1, month: index + 1 }));
+  const sourceTotal = sourceMonths.reduce((sum, month) => sum + getMonthWeight(month), 0);
+  const annualKwh = Number.isFinite(adjusted.annualKwh) ? adjusted.annualKwh : 0;
+  const equalShare = sourceMonths.length > 0 ? annualKwh / sourceMonths.length : 0;
+
+  return sourceMonths.map((month, index) => {
+    const weight = getMonthWeight(month);
+    const adjustedKwh = sourceTotal > 0
+      ? annualKwh * (weight / sourceTotal)
+      : equalShare;
+
+    return {
+      monthName: month.monthName || getMonthShortName(index),
+      adjustedKwh: Math.round(adjustedKwh * 10) / 10,
+    };
+  });
+}
+
+function getMonthWeight(month) {
+  const candidates = [month.adjustedKwh, month.kwhPerKwp, month.kwh, month.energy, month.avgDailyKwh];
+  const value = candidates.find(Number.isFinite);
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+function getMonthShortName(index) {
+  return MONTH_NAMES[index] || `M${index + 1}`;
 }
 
 function renderSavingsChart(roi) {
@@ -1018,12 +1098,14 @@ function hideLoadingState() {
 function resetResultsForRecalculation() {
   calculationRequestId += 1;
   destroyCharts();
+  removeResultsStickyActions();
   document.getElementById('results-content')?.classList.add('hidden');
   document.getElementById('results-loading')?.classList.remove('hidden');
 }
 
 function showError(message) {
   destroyCharts();
+  removeResultsStickyActions();
   const loadingEl = document.getElementById('results-loading');
   if (!loadingEl) return;
 
@@ -1123,4 +1205,5 @@ function getNumericRange(valueA, valueB) {
 export function cleanup() {
   calculationRequestId += 1;
   destroyCharts();
+  removeResultsStickyActions();
 }
