@@ -21,6 +21,7 @@ const defaultState = {
   sunAnalysis: null,    // { bestSpaceId, scores: [...], date }
   annualUsageKwh: null, // Estimated household electricity usage per year
   electricityPricePence: null, // Optional custom import tariff in p/kWh
+  quoteAssumptionMode: null, // null uses configured default; otherwise conservative/balanced/optimistic
   selectedKit: null,    // persisted as kit id reference
   results: null,        // { annualKwh, annualSavings, paybackYears, ... }
 };

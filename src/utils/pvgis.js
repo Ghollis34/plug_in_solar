@@ -24,19 +24,7 @@ export async function fetchSolarData(lat, lng, tilt = 35, azimuth = 0) {
     return pvgisRequestCache.get(cacheKey);
   }
 
-  const params = new URLSearchParams({
-    lat: lat.toFixed(4),
-    lon: lng.toFixed(4),
-    angle: tilt.toString(),
-    aspect: azimuth.toString(),
-    outputformat: 'json',
-    pvcalculation: '1',
-    peakpower: '1',       // 1 kWp for normalised output
-    loss: String(config.pvgisSystemLossPercent ?? 10), // System losses (cables, inverter etc.)
-    mountingplace: 'building',
-  });
-
-  const url = `${PVGIS_BASE}/PVcalc?${params}`;
+  const url = buildPVGISRequestUrl(lat, lng, tilt, azimuth, config.pvgisProxyUrl);
 
   const requestPromise = (async () => {
     try {
@@ -64,6 +52,28 @@ export async function fetchSolarData(lat, lng, tilt = 35, azimuth = 0) {
   return requestPromise;
 }
 
+export function buildPVGISRequestUrl(lat, lng, tilt = 35, azimuth = 0, proxyUrl = '') {
+  const params = new URLSearchParams({
+    lat: lat.toFixed(4),
+    lon: lng.toFixed(4),
+    angle: tilt.toString(),
+    aspect: azimuth.toString(),
+    outputformat: 'json',
+    pvcalculation: '1',
+    peakpower: '1',       // 1 kWp for normalised output
+    loss: String(config.pvgisSystemLossPercent ?? 10), // System losses (cables, inverter etc.)
+    mountingplace: 'building',
+  });
+  const directUrl = `${PVGIS_BASE}/PVcalc?${params}`;
+
+  if (!proxyUrl) {
+    return directUrl;
+  }
+
+  const separator = proxyUrl.includes('?') ? '&' : '?';
+  return `${proxyUrl}${separator}target=${encodeURIComponent(directUrl)}`;
+}
+
 /**
  * Parse PVGIS API response into usable format
  */
@@ -85,7 +95,13 @@ function parsePVGISResponse(data) {
     avgDailyKwh: Math.round(outputs.totals.fixed.E_d * 100) / 100,
   };
 
-  return { months, annual };
+  return {
+    months,
+    annual,
+    isFallback: false,
+    source: 'PVGIS',
+    sourceDetail: 'EU PVGIS location-specific solar model',
+  };
 }
 
 /**
@@ -120,6 +136,8 @@ function getUKFallbackData(lat, tilt = 35, azimuth = 0) {
       avgDailyKwh: Math.round((adjustedBaseKwh / 365) * 100) / 100,
     },
     isFallback: true,
+    source: 'UK fallback',
+    sourceDetail: 'UK fallback solar estimate because PVGIS could not be reached from this browser',
   };
 }
 

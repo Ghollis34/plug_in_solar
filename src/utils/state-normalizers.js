@@ -1,4 +1,5 @@
 import { normalizeDegrees } from './geometry.js';
+import { resolveQuoteAssumptionMode } from './quote-assumptions.js';
 import { getSpaceTypeInfo, OBSTACLE_TYPE_IDS, SPACE_TYPE_IDS } from './site-config.js';
 
 export const MAX_STEP_INDEX = 6;
@@ -52,6 +53,8 @@ export function normalizeStateValue(key, value) {
       return normalizeAnnualUsageKwh(value);
     case 'electricityPricePence':
       return normalizeElectricityPricePence(value);
+    case 'quoteAssumptionMode':
+      return normalizeQuoteAssumptionMode(value);
     case 'selectedKit':
       return normalizeSelectedKit(value);
     case 'results':
@@ -335,6 +338,11 @@ export function normalizeElectricityPricePence(value) {
   return Number.isFinite(clamped)
     ? Math.round(clamped * 100) / 100
     : null;
+}
+
+export function normalizeQuoteAssumptionMode(value) {
+  if (value == null || value === '') return null;
+  return resolveQuoteAssumptionMode(value);
 }
 
 export function normalizeResults(value) {

@@ -62,4 +62,77 @@ describe('quote support modules', () => {
     expect(scenario.valueModel.smartTariffShiftKwh).toBeGreaterThan(0);
     expect(Number.isFinite(scenario.valueModel.smartTariffShiftKwh)).toBe(true);
   });
+
+  it('loads a static live pricing feed when available and keeps catalogue fallback when unavailable', async () => {
+    const feed = await import('./kit-pricing.js').then(({ loadLivePricing }) => loadLivePricing(async () => ({
+      ok: true,
+      json: async () => ({
+        status: 'live',
+        updatedAt: '2026-05-30T12:00:00.000Z',
+        kits: {
+          'ecoflow-powerstream-400': {
+            price: 455,
+            detail: 'Retailer feed checked today.',
+          },
+        },
+      }),
+    })));
+
+    const pricedKit = findPricedKitById('ecoflow-powerstream-400', feed);
+
+    expect(feed.status).toBe('live');
+    expect(pricedKit.price).toBe(455);
+    expect(pricedKit.priceMeta).toMatchObject({
+      status: 'live',
+      label: 'Live price',
+    });
+
+    const fallback = await import('./kit-pricing.js').then(({ loadLivePricing }) => loadLivePricing(async () => ({ ok: false, status: 404 })));
+    expect(fallback.status).toBe('fallback');
+    expect(findPricedKitById('ecoflow-powerstream-400', fallback).price).toBeGreaterThan(455);
+  });
+
+  it('preserves catalogue snapshot labels from generated pricing feeds', () => {
+    const pricedKit = findPricedKitById('ecoflow-powerstream-400', {
+      status: 'catalogue-snapshot',
+      kits: {
+        'ecoflow-powerstream-400': {
+          price: 499,
+          priceMeta: {
+            status: 'catalogue-snapshot',
+            label: 'Catalogue snapshot',
+            detail: 'Generated from the app catalogue.',
+          },
+        },
+      },
+    });
+
+    expect(pricedKit.priceMeta).toMatchObject({
+      status: 'catalogue-snapshot',
+      label: 'Catalogue snapshot',
+      detail: 'Generated from the app catalogue.',
+    });
+  });
+
+  it('supports conservative, balanced, and optimistic quote assumption modes', () => {
+    const solarOnlyKit = getPricedKits().find((kit) => !kit.hasBattery && kit.wattage >= 700);
+    const conservativeScenario = buildScenario(solarOnlyKit, { annualKwh: 700 }, {
+      assumptionMode: 'conservative',
+      baselineFactor: 1,
+      annualUsageKwh: 1800,
+      pricing: resolveElectricityPricing(null, 25),
+    });
+    const optimisticScenario = buildScenario(solarOnlyKit, { annualKwh: 700 }, {
+      assumptionMode: 'optimistic',
+      baselineFactor: 1,
+      annualUsageKwh: 1800,
+      pricing: resolveElectricityPricing(null, 25),
+    });
+
+    expect(usesFullSolarCapture(solarOnlyKit, { assumptionMode: 'conservative' })).toBe(false);
+    expect(usesFullSolarCapture(solarOnlyKit, { assumptionMode: 'optimistic' })).toBe(true);
+    expect(conservativeScenario.valueModel.exportKwh).toBeGreaterThan(0);
+    expect(optimisticScenario.valueModel.exportKwh).toBe(0);
+    expect(optimisticScenario.valueModel.annualValue).toBeGreaterThan(conservativeScenario.valueModel.annualValue);
+  });
 });

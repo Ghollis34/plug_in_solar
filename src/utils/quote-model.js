@@ -1,5 +1,10 @@
 import config from '../data/config.json';
 import { calculateROI } from './roi.js';
+import {
+  getQuoteAssumptionProfile,
+  resolveQuoteAssumptionMode,
+  shouldAssumeFullSolarCapture,
+} from './quote-assumptions.js';
 
 export function assumesNoSolarSpill() {
   return Boolean(config.assumeNoSolarSpill);
@@ -9,11 +14,12 @@ export function hasExportPayment() {
   return (config.exportTariff ?? 0) > 0;
 }
 
-export function usesFullSolarCapture(kit) {
-  return Boolean(kit?.hasBattery || kit?.batteryCapacityWh || assumesNoSolarSpill());
+export function usesFullSolarCapture(kit, options = {}) {
+  return shouldAssumeFullSolarCapture(kit, options.assumptionMode);
 }
 
 export function buildScenario(kit, solarData = {}, options = {}) {
+  const assumptionMode = resolveQuoteAssumptionMode(options.assumptionMode);
   const baselineFactor = clamp(options.baselineFactor ?? 1, 0, 1.5);
   const conservativeFactor = clamp(options.conservativeFactor ?? baselineFactor, 0, 1.5);
   const optimisticFactor = clamp(options.optimisticFactor ?? baselineFactor, 0, 1.5);
@@ -24,9 +30,9 @@ export function buildScenario(kit, solarData = {}, options = {}) {
   const adjusted = buildAdjusted(baseAnnualKwh, baselineFactor);
   const conservativeAdjusted = buildAdjusted(baseAnnualKwh, conservativeFactor);
   const optimisticAdjusted = buildAdjusted(baseAnnualKwh, optimisticFactor);
-  const valueModel = buildValueModel(kit, adjusted.annualKwh, annualUsageKwh, pricing);
-  const conservativeValueModel = buildValueModel(kit, conservativeAdjusted.annualKwh, annualUsageKwh, pricing);
-  const optimisticValueModel = buildValueModel(kit, optimisticAdjusted.annualKwh, annualUsageKwh, pricing);
+  const valueModel = buildValueModel(kit, adjusted.annualKwh, annualUsageKwh, pricing, assumptionMode);
+  const conservativeValueModel = buildValueModel(kit, conservativeAdjusted.annualKwh, annualUsageKwh, pricing, assumptionMode);
+  const optimisticValueModel = buildValueModel(kit, optimisticAdjusted.annualKwh, annualUsageKwh, pricing, assumptionMode);
   const roi = calculateROI({
     kitCost: kit.price,
     annualKwh: adjusted.annualKwh,
@@ -57,6 +63,8 @@ export function buildScenario(kit, solarData = {}, options = {}) {
     valueModel,
     conservativeValueModel,
     optimisticValueModel,
+    assumptionMode,
+    assumptionProfile: getQuoteAssumptionProfile(assumptionMode),
     roi,
     conservativeRoi,
     optimisticRoi,
@@ -82,10 +90,10 @@ function buildAdjusted(baseAnnualKwh, factor) {
   };
 }
 
-function buildValueModel(kit, annualKwh, annualUsageKwh, pricing) {
+function buildValueModel(kit, annualKwh, annualUsageKwh, pricing, assumptionMode) {
   const unitRatePence = Number.isFinite(pricing.unitRatePence) ? pricing.unitRatePence : config.electricityPrice;
   const exportRatePence = Number.isFinite(config.exportTariff) ? config.exportTariff : 0;
-  const selfUseRatio = getSelfUseRatio(kit, annualKwh, annualUsageKwh);
+  const selfUseRatio = getSelfUseRatio(kit, annualKwh, annualUsageKwh, assumptionMode);
   const selfUsedKwh = round(annualKwh * selfUseRatio, 1);
   const exportKwh = Math.max(0, round(annualKwh - selfUsedKwh, 1));
   const billSavings = round(selfUsedKwh * (unitRatePence / 100), 2);
@@ -110,13 +118,14 @@ function buildValueModel(kit, annualKwh, annualUsageKwh, pricing) {
   };
 }
 
-function getSelfUseRatio(kit, annualKwh, annualUsageKwh) {
-  if (usesFullSolarCapture(kit)) {
-    return clamp(config.batterySelfUseMaxRatio ?? 0.97, 0, 1);
+function getSelfUseRatio(kit, annualKwh, annualUsageKwh, assumptionMode) {
+  if (usesFullSolarCapture(kit, { assumptionMode })) {
+    return 1;
   }
 
+  const profile = getQuoteAssumptionProfile(assumptionMode);
   const demandRatio = annualUsageKwh > 0 ? annualUsageKwh / Math.max(annualKwh, 1) : 1;
-  const base = config.solarSelfUseBaseRatio ?? 0.84;
+  const base = (config.solarSelfUseBaseRatio ?? 0.84) + profile.selfUseAdjustment;
   return clamp(base + Math.min(0.12, demandRatio * 0.02), config.solarSelfUseMinRatio ?? 0.72, config.solarSelfUseMaxRatio ?? 0.96);
 }
 
