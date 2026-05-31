@@ -1,0 +1,97 @@
+{
+  "status": "catalogue-snapshot",
+  "updatedAt": "2026-05-31T22:44:24.315Z",
+  "source": "Generated from src/data/kits.json by npm run refresh-prices",
+  "kits": {
+    "ecoflow-powerstream-400": {
+      "price": 499,
+      "detail": "Catalogue snapshot generated for this deployment. Check the retailer before buying.",
+      "priceMeta": {
+        "status": "catalogue-snapshot",
+        "label": "Catalogue snapshot",
+        "detail": "Generated from the app catalogue; replace with retailer feed data when available."
+      }
+    },
+    "ecoflow-powerstream-800": {
+      "price": 799,
+      "detail": "Catalogue snapshot generated for this deployment. Check the retailer before buying.",
+      "priceMeta": {
+        "status": "catalogue-snapshot",
+        "label": "Catalogue snapshot",
+        "detail": "Generated from the app catalogue; replace with retailer feed data when available."
+      }
+    },
+    "ecoflow-powerstream-800-battery": {
+      "price": 1299,
+      "detail": "Catalogue snapshot generated for this deployment. Check the retailer before buying.",
+      "priceMeta": {
+        "status": "catalogue-snapshot",
+        "label": "Catalogue snapshot",
+        "detail": "Generated from the app catalogue; replace with retailer feed data when available."
+      }
+    },
+    "thunder-storm-360": {
+      "price": 449,
+      "detail": "Catalogue snapshot generated for this deployment. Check the retailer before buying.",
+      "priceMeta": {
+        "status": "catalogue-snapshot",
+        "label": "Catalogue snapshot",
+        "detail": "Generated from the app catalogue; replace with retailer feed data when available."
+      }
+    },
+    "thunder-storm-710": {
+      "price": 699,
+      "detail": "Catalogue snapshot generated for this deployment. Check the retailer before buying.",
+      "priceMeta": {
+        "status": "catalogue-snapshot",
+        "label": "Catalogue snapshot",
+        "detail": "Generated from the app catalogue; replace with retailer feed data when available."
+      }
+    },
+    "zendure-solarflow-400": {
+      "price": 529,
+      "detail": "Catalogue snapshot generated for this deployment. Check the retailer before buying.",
+      "priceMeta": {
+        "status": "catalogue-snapshot",
+        "label": "Catalogue snapshot",
+        "detail": "Generated from the app catalogue; replace with retailer feed data when available."
+      }
+    },
+    "zendure-solarflow-800": {
+      "price": 849,
+      "detail": "Catalogue snapshot generated for this deployment. Check the retailer before buying.",
+      "priceMeta": {
+        "status": "catalogue-snapshot",
+        "label": "Catalogue snapshot",
+        "detail": "Generated from the app catalogue; replace with retailer feed data when available."
+      }
+    },
+    "zendure-solarflow-800-battery": {
+      "price": 1399,
+      "detail": "Catalogue snapshot generated for this deployment. Check the retailer before buying.",
+      "priceMeta": {
+        "status": "catalogue-snapshot",
+        "label": "Catalogue snapshot",
+        "detail": "Generated from the app catalogue; replace with retailer feed data when available."
+      }
+    },
+    "anker-solix-400": {
+      "price": 479,
+      "detail": "Catalogue snapshot generated for this deployment. Check the retailer before buying.",
+      "priceMeta": {
+        "status": "catalogue-snapshot",
+        "label": "Catalogue snapshot",
+        "detail": "Generated from the app catalogue; replace with retailer feed data when available."
+      }
+    },
+    "anker-solix-800": {
+      "price": 779,
+      "detail": "Catalogue snapshot generated for this deployment. Check the retailer before buying.",
+      "priceMeta": {
+        "status": "catalogue-snapshot",
+        "label": "Catalogue snapshot",
+        "detail": "Generated from the app catalogue; replace with retailer feed data when available."
+      }
+    }
+  }
+}

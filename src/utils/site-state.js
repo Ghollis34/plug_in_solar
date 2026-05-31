@@ -1,6 +1,7 @@
 import config from '../data/config.json';
 import { resolveElectricityPricing } from './electricity-pricing.js';
 import { getRectangleRing } from './geometry.js';
+import { resolveQuoteAssumptionMode } from './quote-assumptions.js';
 import { getState } from './state.js';
 
 export const DEFAULT_ANNUAL_USAGE_KWH = config.defaultAnnualElectricityUsageKwh ?? 2700;
@@ -130,6 +131,10 @@ export function isUsingCustomElectricityPrice(state = null) {
 
 export function getResolvedElectricityPricing(state = null) {
   return resolveElectricityPricing(getLocationState(state), getElectricityPriceInput(state));
+}
+
+export function getQuoteAssumptionMode(state = null) {
+  return resolveQuoteAssumptionMode(resolveState(state).quoteAssumptionMode);
 }
 
 function resolveState(state) {

@@ -14,12 +14,14 @@ import { escapeHtml, safeDataId, sanitizeExternalUrl } from '../utils/security.j
 import { normalizeCustomUnitRatePence } from '../utils/electricity-pricing.js';
 import { ALLOWED_RETAILER_HOSTS, resolveRetailerLink } from '../utils/referrals.js';
 import { buildScenario, hasExportPayment, usesFullSolarCapture } from '../utils/quote-model.js';
+import { getQuoteAssumptionProfile, QUOTE_ASSUMPTION_MODE_OPTIONS } from '../utils/quote-assumptions.js';
 import {
   DEFAULT_ANNUAL_USAGE_KWH,
   DEFAULT_ANNUAL_USAGE_SOURCE,
   getAnnualUsageInput,
   getElectricityPriceInput,
   getLocationState,
+  getQuoteAssumptionMode,
   getResolvedElectricityPricing,
   getRecommendedSpace,
   getResolvedAnnualUsageKwh,
@@ -40,6 +42,8 @@ export function render() {
   const electricityPriceInput = getElectricityPriceInput();
   const resolvedPricing = getResolvedElectricityPricing();
   const usingCustomElectricityPrice = isUsingCustomElectricityPrice();
+  const quoteAssumptionMode = getQuoteAssumptionMode();
+  const quoteAssumptionProfile = getQuoteAssumptionProfile(quoteAssumptionMode);
 
   return `
     <div class="step-page scrollable">
@@ -107,6 +111,30 @@ export function render() {
                 </div>
               </div>
             </div>
+            <div class="card-flat results-usage-card">
+              <div class="results-usage-header">
+                <div>
+                  <div class="results-kicker">Quote confidence assumption</div>
+                  <h3 class="results-usage-title">Solar capture model</h3>
+                </div>
+                <div class="map-panel-pill" id="quote-assumption-pill">${escapeHtml(quoteAssumptionProfile.pill)}</div>
+              </div>
+              <div class="results-usage-grid">
+                <div>
+                  <label class="form-label" for="quote-assumption-select">How cautious should the quote be?</label>
+                  <div class="results-usage-input-row">
+                    <select class="form-input" id="quote-assumption-select">
+                      ${QUOTE_ASSUMPTION_MODE_OPTIONS.map((profile) => `<option value="${profile.id}"${profile.id === quoteAssumptionMode ? ' selected' : ''}>${escapeHtml(profile.label)}</option>`).join('')}
+                    </select>
+                  </div>
+                  <div class="analysis-note" id="quote-assumption-helper">${escapeHtml(quoteAssumptionProfile.summary)}</div>
+                </div>
+                <div class="results-usage-summary">
+                  <div class="results-usage-summary-label" id="quote-assumption-source">${escapeHtml(quoteAssumptionProfile.label)} estimate</div>
+                  <div class="results-usage-summary-detail" id="quote-assumption-detail">${escapeHtml(quoteAssumptionProfile.detail)}</div>
+                </div>
+              </div>
+            </div>
             <div class="recommendation-card" id="recommendation-card"></div>
             <div class="results-grid" id="results-grid"></div>
             <div class="results-chart-grid">
@@ -165,6 +193,7 @@ async function calculateResults() {
   const annualUsageKwh = getResolvedAnnualUsageKwh();
   const usingDefaultAnnualUsage = isUsingDefaultAnnualUsage();
   const pricing = getResolvedElectricityPricing();
+  const quoteAssumptionMode = getQuoteAssumptionMode();
   const spaceType = selectedSpace?.type || null;
 
   if (!location || !selectedKitState?.id) {
@@ -207,6 +236,7 @@ async function calculateResults() {
       optimisticFactor,
       annualUsageKwh,
       pricing,
+      assumptionMode: quoteAssumptionMode,
     });
     const batteryUpgradeKit = getBatteryUpgradeKit(selectedKit, livePricing, spaceType);
     const upgradeScenario = batteryUpgradeKit
@@ -216,6 +246,7 @@ async function calculateResults() {
         optimisticFactor,
         annualUsageKwh,
         pricing,
+        assumptionMode: quoteAssumptionMode,
       })
       : null;
 
@@ -233,6 +264,7 @@ async function calculateResults() {
         electricityPricePence: pricing.unitRatePence,
         electricityPriceMode: pricing.mode,
         electricityRegion: pricing.region,
+        quoteAssumptionMode,
         upgradeKitId: upgradeScenario?.kit.id || null,
       },
     });
@@ -247,6 +279,7 @@ async function calculateResults() {
       annualUsageKwh,
       usingDefaultAnnualUsage,
       pricing,
+      quoteAssumptionMode,
     });
   } catch (error) {
     if (requestId !== calculationRequestId) return;
@@ -255,7 +288,7 @@ async function calculateResults() {
   }
 }
 
-function displayResults({ primaryScenario, upgradeScenario, selectedSpace, recommendedSpace, solarData, annualUsageKwh, usingDefaultAnnualUsage, pricing }) {
+function displayResults({ primaryScenario, upgradeScenario, selectedSpace, recommendedSpace, solarData, annualUsageKwh, usingDefaultAnnualUsage, pricing, quoteAssumptionMode }) {
   const {
     kit,
     roi,
@@ -268,8 +301,9 @@ function displayResults({ primaryScenario, upgradeScenario, selectedSpace, recom
     conservativeRoi,
     optimisticRoi,
   } = primaryScenario;
-  const primaryFullCapture = usesFullSolarCapture(kit);
-  const upgradeFullCapture = usesFullSolarCapture(upgradeScenario?.kit);
+  const primaryFullCapture = usesFullSolarCapture(kit, { assumptionMode: quoteAssumptionMode });
+  const upgradeFullCapture = usesFullSolarCapture(upgradeScenario?.kit, { assumptionMode: quoteAssumptionMode });
+  const quoteAssumptionProfile = getQuoteAssumptionProfile(quoteAssumptionMode);
   const headlineAdjusted = optimisticAdjusted;
   const headlineValueModel = optimisticValueModel;
   const headlineRoi = optimisticRoi;
@@ -368,6 +402,7 @@ function displayResults({ primaryScenario, upgradeScenario, selectedSpace, recom
   const annualValueGrowthCopy = (config.annualValueGrowthRate ?? 0) > 0
     ? `Payback and long-term return also assume saved electricity value rises by about ${Math.round((config.annualValueGrowthRate ?? 0) * 100)}% per year from ${escapeHtml(config.annualValueGrowthSource || 'the quote model')}.`
     : '';
+  const solarSourceDetail = getSolarDataSourceDetail(solarData);
   const kitPriceStatus = getKitPriceStatusLabel(kit.priceMeta);
   const kitPriceDetail = getKitPriceDetailLabel(kit.priceMeta);
   const firstYearValueRange = formatCurrencyRange(conservativeValueModel.annualValue, optimisticValueModel.annualValue);
@@ -405,6 +440,7 @@ function displayResults({ primaryScenario, upgradeScenario, selectedSpace, recom
         <div class="analysis-note" style="margin-bottom: 14px;">${usageContextCopy}</div>
         <div class="analysis-note" style="margin-bottom: 14px;">Direct-sun scores are a shading signal, not a straight energy conversion. Year-one kWh still depends on the selected facing and tilt as well as the shade model.</div>
         <div class="analysis-note" style="margin-bottom: 14px;">Kit cost in this quote is <strong>${formatCurrency(headlineRoi.kitCost)}</strong>. ${escapeHtml(kitPriceStatus)}. ${escapeHtml(kitPriceDetail)}</div>
+        <div class="analysis-note" style="margin-bottom: 14px;"><strong>${escapeHtml(quoteAssumptionProfile.label)} quote mode:</strong> ${escapeHtml(quoteAssumptionProfile.summary)}</div>
         <div class="badge-row" style="margin: 14px 0 10px;">
           <span class="info-badge">${kit.hasBattery ? 'Battery combo selected' : 'Solar-only kit selected'}</span>
           <span class="info-badge">Confidence: ${safeConfidence}</span>
@@ -495,8 +531,8 @@ function displayResults({ primaryScenario, upgradeScenario, selectedSpace, recom
       ? ''
       : 'This plug-in solar quote assumes excess electricity sent to the grid is unpaid.';
   document.getElementById('price-disclaimer').textContent = exportPaymentEnabled
-    ? `Based on ${pricing.sourceDetail}. The quote is currently using ${formatRatePence(pricing.unitRatePence)}${config.electricityPriceUnit}${pricing.standingChargePence != null ? `, with a regional standing charge reference of ${formatRatePence(pricing.standingChargePence)}p/day shown for context only.` : '.'} Household usage is set to ${formatWholeNumber(annualUsageKwh)} kWh/year${usingDefaultAnnualUsage ? ` using the UK typical default from ${DEFAULT_ANNUAL_USAGE_SOURCE}` : ''}. Kit cost is ${formatCurrency(headlineRoi.kitCost)} from ${kitPriceStatus.toLowerCase()}. ${kitPriceDetail} Headline tiles show the best-case modelled outcome and smaller text shows the wider range.${spillDisclaimerCopy ? ` ${spillDisclaimerCopy}` : ''}${smartTariffIncluded ? ` Smart-tariff battery shifting is estimated using ${config.smartTariffOffPeakPrice}${config.smartTariffOffPeakPriceUnit} overnight import from ${config.smartTariffSource}.` : ''} ${storageAssumptionCopy}${annualValueGrowthCopy ? ` ${annualValueGrowthCopy}` : ''}`
-    : `Based on ${pricing.sourceDetail}. The quote is currently using ${formatRatePence(pricing.unitRatePence)}${config.electricityPriceUnit}${pricing.standingChargePence != null ? `, with a regional standing charge reference of ${formatRatePence(pricing.standingChargePence)}p/day shown for context only.` : '.'} Household usage is set to ${formatWholeNumber(annualUsageKwh)} kWh/year${usingDefaultAnnualUsage ? ` using the UK typical default from ${DEFAULT_ANNUAL_USAGE_SOURCE}` : ''}. Kit cost is ${formatCurrency(headlineRoi.kitCost)} from ${kitPriceStatus.toLowerCase()}. ${kitPriceDetail} Headline tiles show the best-case modelled outcome and smaller text shows the wider range. ${spillDisclaimerCopy}${smartTariffIncluded ? ` Smart-tariff battery shifting is estimated using ${config.smartTariffOffPeakPrice}${config.smartTariffOffPeakPriceUnit} overnight import from ${config.smartTariffSource}.` : ''} ${storageAssumptionCopy}${annualValueGrowthCopy ? ` ${annualValueGrowthCopy}` : ''}`;
+    ? `Based on ${pricing.sourceDetail}. Solar source: ${solarSourceDetail}. Quote mode: ${quoteAssumptionProfile.label}. The quote is currently using ${formatRatePence(pricing.unitRatePence)}${config.electricityPriceUnit}${pricing.standingChargePence != null ? `, with a regional standing charge reference of ${formatRatePence(pricing.standingChargePence)}p/day shown for context only.` : '.'} Household usage is set to ${formatWholeNumber(annualUsageKwh)} kWh/year${usingDefaultAnnualUsage ? ` using the UK typical default from ${DEFAULT_ANNUAL_USAGE_SOURCE}` : ''}. Kit cost is ${formatCurrency(headlineRoi.kitCost)} from ${kitPriceStatus.toLowerCase()}. ${kitPriceDetail} Headline tiles show the best-case modelled outcome and smaller text shows the wider range.${spillDisclaimerCopy ? ` ${spillDisclaimerCopy}` : ''}${smartTariffIncluded ? ` Smart-tariff battery shifting is estimated using ${config.smartTariffOffPeakPrice}${config.smartTariffOffPeakPriceUnit} overnight import from ${config.smartTariffSource}.` : ''} ${storageAssumptionCopy}${annualValueGrowthCopy ? ` ${annualValueGrowthCopy}` : ''}`
+    : `Based on ${pricing.sourceDetail}. Solar source: ${solarSourceDetail}. Quote mode: ${quoteAssumptionProfile.label}. The quote is currently using ${formatRatePence(pricing.unitRatePence)}${config.electricityPriceUnit}${pricing.standingChargePence != null ? `, with a regional standing charge reference of ${formatRatePence(pricing.standingChargePence)}p/day shown for context only.` : '.'} Household usage is set to ${formatWholeNumber(annualUsageKwh)} kWh/year${usingDefaultAnnualUsage ? ` using the UK typical default from ${DEFAULT_ANNUAL_USAGE_SOURCE}` : ''}. Kit cost is ${formatCurrency(headlineRoi.kitCost)} from ${kitPriceStatus.toLowerCase()}. ${kitPriceDetail} Headline tiles show the best-case modelled outcome and smaller text shows the wider range. ${spillDisclaimerCopy}${smartTariffIncluded ? ` Smart-tariff battery shifting is estimated using ${config.smartTariffOffPeakPrice}${config.smartTariffOffPeakPriceUnit} overnight import from ${config.smartTariffSource}.` : ''} ${storageAssumptionCopy}${annualValueGrowthCopy ? ` ${annualValueGrowthCopy}` : ''}`;
 
   updateAssumptionUi();
 }
@@ -526,7 +562,7 @@ function removeResultsStickyActions() {
 function renderBatteryUpgrade(primaryScenario, upgradeScenario) {
   const slot = document.getElementById('battery-upgrade-slot');
   if (!slot) return;
-  const primaryFullCapture = usesFullSolarCapture(primaryScenario.kit);
+  const primaryFullCapture = usesFullSolarCapture(primaryScenario.kit, { assumptionMode: primaryScenario.assumptionMode });
   const exportPaymentEnabled = hasExportPayment();
   const smartTariffIncluded = primaryScenario.valueModel.smartTariffSavings > 0;
 
@@ -887,6 +923,13 @@ function initAssumptionControls() {
       applyElectricityPriceInput();
     }
   });
+
+  document.getElementById('quote-assumption-select')?.addEventListener('change', (event) => {
+    setState({ quoteAssumptionMode: event.target.value, results: null });
+    updateAssumptionUi();
+    resetResultsForRecalculation();
+    calculateResults();
+  });
 }
 
 function applyAnnualUsageInput() {
@@ -1013,13 +1056,44 @@ function updatePricingAssumptionUi() {
   }
 }
 
+function updateQuoteAssumptionUi() {
+  const mode = getQuoteAssumptionMode();
+  const profile = getQuoteAssumptionProfile(mode);
+
+  const pill = document.getElementById('quote-assumption-pill');
+  if (pill) {
+    pill.textContent = profile.pill;
+  }
+
+  const select = document.getElementById('quote-assumption-select');
+  if (select && document.activeElement !== select) {
+    select.value = mode;
+  }
+
+  const helper = document.getElementById('quote-assumption-helper');
+  if (helper) {
+    helper.textContent = profile.summary;
+  }
+
+  const source = document.getElementById('quote-assumption-source');
+  if (source) {
+    source.textContent = `${profile.label} estimate`;
+  }
+
+  const detail = document.getElementById('quote-assumption-detail');
+  if (detail) {
+    detail.textContent = profile.detail;
+  }
+}
+
 function updateAssumptionUi() {
   updateUsageAssumptionUi();
   updatePricingAssumptionUi();
+  updateQuoteAssumptionUi();
 }
 
 function getAnnualUsageHelperText(usingDefaultAnnualUsage, annualUsageKwh, selectedKit = resolveSelectedKit(getState('selectedKit'))) {
-  const fullCaptureWithStorage = usesFullSolarCapture(selectedKit);
+  const fullCaptureWithStorage = usesFullSolarCapture(selectedKit, { assumptionMode: getQuoteAssumptionMode() });
 
   return usingDefaultAnnualUsage
     ? fullCaptureWithStorage
@@ -1064,6 +1138,16 @@ function getElectricityPricePillText(pricing, usingCustomElectricityPrice) {
   }
 
   return 'GB average active';
+}
+
+function getSolarDataSourceDetail(solarData) {
+  if (solarData?.sourceDetail) {
+    return solarData.sourceDetail;
+  }
+
+  return solarData?.isFallback
+    ? 'UK fallback solar estimate because PVGIS could not be reached from this browser'
+    : 'EU PVGIS location-specific solar model';
 }
 
 function getBatteryUpgradeKit(selectedKit, livePricing = null, spaceType = null) {
