@@ -1,5 +1,6 @@
 import { getState, setState } from '../utils/state.js';
 import { createMapStepSession } from '../utils/map-step-session.js';
+import { setupMobileControlSheet } from '../utils/mobile-control-sheet.js';
 
 let map = null;
 let marker = null;
@@ -8,12 +9,13 @@ let searchAbortController = null;
 let searchRequestId = 0;
 let outsideClickHandler = null;
 let mapRuntime = null;
+let locationControlSheet = null;
 
 const mapSession = createMapStepSession();
 
 export function render() {
   return `
-    <div class="step-page step-page-map">
+    <div class="step-page step-page-map has-mobile-map-toggle">
       <div class="step-header">
         <div class="section-kicker">Step 1 · Location</div>
         <h2 class="step-title">Find Your Location</h2>
@@ -121,6 +123,7 @@ export function init() {
   const token = mapSession.beginRun();
   showLocationMapLoading('Loading UK map…');
   initSearch();
+  initLocationControls();
   updateLocationGuide();
 
   mapSession.ensureRuntime(token)
@@ -164,6 +167,33 @@ export function init() {
 
   document.getElementById('btn-clear-location')?.addEventListener('click', () => {
     clearLocationSelection();
+  });
+}
+
+function initLocationControls() {
+  locationControlSheet = setupMobileControlSheet({
+    onToggle: () => queueLocationMapResize(),
+  });
+}
+
+function queueLocationMapResize() {
+  const activeMap = map;
+  if (!activeMap) return;
+
+  window.requestAnimationFrame(() => {
+    try {
+      activeMap?.resize?.();
+    } catch (error) {
+      console.warn('Unable to resize location map after controls sheet change:', error);
+    }
+
+    window.requestAnimationFrame(() => {
+      try {
+        activeMap?.resize?.();
+      } catch (error) {
+        console.warn('Unable to settle location map after controls sheet change:', error);
+      }
+    });
   });
 }
 
@@ -521,6 +551,8 @@ export function cleanup() {
   }
 
   mapSession.destroy();
+  locationControlSheet?.destroy();
+  locationControlSheet = null;
   map = null;
   marker = null;
 }

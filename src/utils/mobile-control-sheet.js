@@ -12,14 +12,45 @@ export function setupMobileControlSheet(options = {}) {
   handle.type = 'button';
   handle.className = 'mobile-sheet-handle';
   handle.setAttribute('aria-controls', panel.id || 'mobile-map-controls');
+  handle.innerHTML = '<span class="mobile-sheet-grip" aria-hidden="true"></span>';
   panel.prepend(handle);
 
   let collapsed = false;
   let startY = null;
-  let moved = false;
+  let startOffset = 0;
+  let currentOffset = 0;
+  let dragMoved = false;
+
+  const getMaxOffset = () => {
+    const panelHeight = panel.getBoundingClientRect().height;
+    const handleHeight = handle.getBoundingClientRect().height;
+    const safePeek = Math.max(handleHeight, 42);
+    return Math.max(0, panelHeight - safePeek);
+  };
+
+  const setSheetContentInteractive = (interactive) => {
+    [...panel.children].forEach((child) => {
+      if (child === handle) return;
+      if (interactive) {
+        child.removeAttribute('aria-hidden');
+        child.inert = false;
+      } else {
+        child.setAttribute('aria-hidden', 'true');
+        child.inert = true;
+      }
+    });
+  };
+
+  const queueResize = () => {
+    window.requestAnimationFrame(() => {
+      options.onToggle?.({ collapsed });
+    });
+  };
 
   const setCollapsed = (nextCollapsed, updateOptions = {}) => {
     collapsed = Boolean(nextCollapsed);
+    panel.style.removeProperty('--mobile-sheet-drag-offset');
+    page.classList.remove('mobile-sheet-dragging');
     page.classList.toggle('mobile-sheet-collapsed', collapsed);
     page.classList.toggle('mobile-sheet-expanded', !collapsed);
     handle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
@@ -27,44 +58,67 @@ export function setupMobileControlSheet(options = {}) {
       'aria-label',
       collapsed ? 'Open map controls' : 'Hide map controls'
     );
-    handle.innerHTML = collapsed
-      ? '<span class="mobile-sheet-grip" aria-hidden="true"></span><span>Controls</span><small>Drag up</small>'
-      : '<span class="mobile-sheet-grip" aria-hidden="true"></span><span>Hide controls</span><small>Drag down</small>';
+    setSheetContentInteractive(!collapsed);
 
     if (updateOptions.notify !== false) {
-      options.onToggle?.({ collapsed });
+      queueResize();
     }
+  };
+
+  const applyDragOffset = (offset) => {
+    currentOffset = Math.min(Math.max(offset, 0), getMaxOffset());
+    panel.style.setProperty('--mobile-sheet-drag-offset', `${currentOffset}px`);
   };
 
   const handlePointerDown = (event) => {
     startY = event.clientY;
-    moved = false;
+    startOffset = collapsed ? getMaxOffset() : 0;
+    currentOffset = startOffset;
+    dragMoved = false;
+    page.classList.add('mobile-sheet-dragging');
+    panel.style.setProperty('--mobile-sheet-drag-offset', `${startOffset}px`);
     handle.setPointerCapture?.(event.pointerId);
   };
 
   const handlePointerMove = (event) => {
     if (startY == null) return;
-    if (Math.abs(event.clientY - startY) > 10) {
-      moved = true;
+
+    const deltaY = event.clientY - startY;
+    if (Math.abs(deltaY) > 4) {
+      dragMoved = true;
     }
+
+    applyDragOffset(startOffset + deltaY);
+    event.preventDefault();
   };
 
   const handlePointerUp = (event) => {
     if (startY == null) return;
-    const deltaY = event.clientY - startY;
+
+    const maxOffset = getMaxOffset();
+    const shouldCollapse = currentOffset > maxOffset * 0.45;
+
     startY = null;
     handle.releasePointerCapture?.(event.pointerId);
 
-    if (Math.abs(deltaY) < 28) {
+    if (dragMoved) {
+      setCollapsed(shouldCollapse);
       return;
     }
 
-    setCollapsed(deltaY > 0);
+    page.classList.remove('mobile-sheet-dragging');
+    panel.style.removeProperty('--mobile-sheet-drag-offset');
+  };
+
+  const handlePointerCancel = () => {
+    startY = null;
+    dragMoved = false;
+    setCollapsed(collapsed, { notify: false });
   };
 
   const handleClick = () => {
-    if (moved) {
-      moved = false;
+    if (dragMoved) {
+      dragMoved = false;
       return;
     }
     setCollapsed(!collapsed);
@@ -73,10 +127,7 @@ export function setupMobileControlSheet(options = {}) {
   handle.addEventListener('pointerdown', handlePointerDown);
   handle.addEventListener('pointermove', handlePointerMove);
   handle.addEventListener('pointerup', handlePointerUp);
-  handle.addEventListener('pointercancel', () => {
-    startY = null;
-    moved = false;
-  });
+  handle.addEventListener('pointercancel', handlePointerCancel);
   handle.addEventListener('click', handleClick);
 
   setCollapsed(Boolean(options.collapsed), { notify: false });
@@ -85,7 +136,9 @@ export function setupMobileControlSheet(options = {}) {
     setCollapsed,
     isCollapsed: () => collapsed,
     destroy: () => {
-      page.classList.remove('mobile-sheet-collapsed', 'mobile-sheet-expanded');
+      page.classList.remove('mobile-sheet-collapsed', 'mobile-sheet-expanded', 'mobile-sheet-dragging');
+      panel.style.removeProperty('--mobile-sheet-drag-offset');
+      setSheetContentInteractive(true);
       panel.classList.remove('mobile-control-sheet');
       handle.remove();
     },
