@@ -224,6 +224,7 @@ function addSpaceMarkers() {
 
 function initControls() {
   shadowControlSheet = setupMobileControlSheet({
+    mergePanelSelectors: ['.map-overlay-panel-ranking'],
     onToggle: () => queueShadowMapResize(),
   });
   setShadowMobileView('controls', { resizeMap: false });
