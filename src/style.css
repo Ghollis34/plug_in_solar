@@ -3760,10 +3760,18 @@ body {
   .step-page-map.placement-map-mode {
     position: fixed;
     inset: 0;
-    z-index: 100;
+    z-index: 2000;
     height: 100dvh;
     min-height: 0;
     background: var(--bg-primary);
+  }
+
+  body.placement-map-active #app-header {
+    display: none;
+  }
+
+  body.placement-map-active #wizard-container {
+    padding-top: 0;
   }
 
   .step-page-map.placement-map-mode .map-overlay-panel,
@@ -3793,8 +3801,28 @@ body {
   }
 
   .step-page-map.placement-map-mode .placement-mobile-view-toggle {
-    top: auto;
-    bottom: calc(16px + env(safe-area-inset-bottom));
+    top: calc(14px + env(safe-area-inset-top));
+    bottom: auto;
+    left: 16px;
+    right: auto;
+    margin: 0;
+    max-width: calc(100% - 32px);
+    z-index: 36;
+  }
+
+  .step-page-map.placement-map-mode .placement-mobile-view-btn[data-placement-view="map"] {
+    display: none;
+  }
+
+  .step-page-map.placement-map-mode .placement-mobile-view-btn[data-placement-view="controls"] {
+    background: linear-gradient(135deg, var(--accent-light), var(--accent));
+    color: #0B1120;
+    box-shadow: 0 10px 22px rgba(245, 158, 11, 0.28);
+    padding: 11px 15px;
+  }
+
+  .step-page-map.placement-map-mode .placement-mobile-view-btn[data-placement-view="controls"]::before {
+    content: '← ';
   }
 
   body.map-placement-banner-active .step-page-map:not(.placement-map-mode) .placement-mobile-view-toggle {
@@ -3802,7 +3830,7 @@ body {
   }
 
   .step-page-map.placement-map-mode .map-placement-banner {
-    top: calc(12px + env(safe-area-inset-top));
+    top: calc(72px + env(safe-area-inset-top));
   }
 
   .step-page-map.placement-map-mode .satellite-toggle-btn {
@@ -3814,7 +3842,7 @@ body {
   }
 
   .step-page-map.placement-map-mode .map-interaction-hint {
-    top: calc(64px + env(safe-area-inset-top));
+    top: calc(72px + env(safe-area-inset-top));
   }
 
   .step-page-map.placement-map-mode .map-container {

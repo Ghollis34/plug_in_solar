@@ -389,7 +389,9 @@ function setPlacementMobileView(view, options = {}) {
   placementMobileView = view === 'map' ? 'map' : 'controls';
 
   const page = document.querySelector('.step-page-map');
-  page?.classList.toggle('placement-map-mode', placementMobileView === 'map');
+  const isMapMode = placementMobileView === 'map';
+  page?.classList.toggle('placement-map-mode', isMapMode);
+  document.body.classList.toggle('placement-map-active', isMapMode);
 
   document.querySelectorAll('[data-placement-view]').forEach((button) => {
     const isActive = button.dataset.placementView === placementMobileView;
@@ -1612,7 +1614,7 @@ function getEffectiveSelectedSpaceId() {
 export function cleanup() {
   heatmapRenderNonce += 1;
   cancelScheduledHeatmapRefresh();
-  document.body.classList.remove('map-placement-banner-active');
+  document.body.classList.remove('map-placement-banner-active', 'placement-map-active');
 
   document.removeEventListener('keydown', handleEscapeKey);
 
