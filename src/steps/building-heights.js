@@ -20,6 +20,7 @@ let activeObstacleTool = 'fence';
 let pendingPlacement = null;
 let fenceStartPoint = null;
 let mapRuntime = null;
+let siteSetupMobileView = 'controls';
 
 const mapSession = createMapStepSession();
 
@@ -35,7 +36,7 @@ export function render() {
   const obstacleCount = getObstaclesState().length;
 
   return `
-    <div class="step-page step-page-map">
+    <div class="step-page step-page-map has-mobile-map-toggle">
       <div class="step-header">
         <div class="section-kicker">Step 2 · Site Setup</div>
         <h2 class="step-title">Confirm Property & Site Obstacles</h2>
@@ -56,6 +57,15 @@ export function render() {
         <div class="map-placement-banner hidden" id="site-setup-banner">
           <span id="site-setup-banner-text">Click the map to place</span>
           <button class="btn btn-sm btn-secondary" id="btn-cancel-site-placement" style="padding: 4px 12px; font-size: 0.75rem;">✕ Cancel</button>
+        </div>
+
+        <div class="placement-mobile-view-toggle" role="group" aria-label="Site setup screen view">
+          <button type="button" class="placement-mobile-view-btn" id="btn-site-view-map" data-site-view="map" aria-pressed="false">
+            🗺 Full map
+          </button>
+          <button type="button" class="placement-mobile-view-btn active" id="btn-site-view-controls" data-site-view="controls" aria-pressed="true">
+            Controls
+          </button>
         </div>
 
         <div class="map-overlay-panel map-overlay-panel-building">
@@ -374,6 +384,13 @@ function bindMapInteractions() {
 }
 
 function initControls() {
+  document.querySelectorAll('[data-site-view]').forEach((button) => {
+    button.addEventListener('click', () => {
+      setSiteSetupMobileView(button.dataset.siteView);
+    });
+  });
+  setSiteSetupMobileView('controls', { resizeMap: false });
+
   document.querySelectorAll('.direction-chip[data-facing]').forEach((button) => {
     button.addEventListener('click', () => {
       const facing = parseInt(button.dataset.facing || '', 10);
@@ -424,6 +441,7 @@ function initControls() {
 
   document.getElementById('btn-place-obstacle')?.addEventListener('click', () => {
     setPendingPlacement(activeObstacleTool);
+    setSiteSetupMobileView('map');
   });
 
   document.getElementById('btn-cancel-fence')?.addEventListener('click', () => {
@@ -438,6 +456,49 @@ function initControls() {
 
   document.addEventListener('keydown', handleEscapeKey);
   updateShedRotationUI();
+}
+
+
+function setSiteSetupMobileView(view, options = {}) {
+  siteSetupMobileView = view === 'map' ? 'map' : 'controls';
+
+  const page = document.querySelector('.step-page-map');
+  const isMapMode = siteSetupMobileView === 'map';
+  page?.classList.toggle('placement-map-mode', isMapMode);
+  document.body.classList.toggle('placement-map-active', isMapMode);
+
+  document.querySelectorAll('[data-site-view]').forEach((button) => {
+    const isActive = button.dataset.siteView === siteSetupMobileView;
+    button.classList.toggle('active', isActive);
+    button.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+  });
+
+  if (options.resizeMap !== false) {
+    queueSiteMapResize();
+  }
+}
+
+function queueSiteMapResize() {
+  const activeMap = map;
+  if (!activeMap) return;
+
+  window.requestAnimationFrame(() => {
+    try {
+      activeMap?.resize?.();
+      refreshObstacles();
+    } catch (error) {
+      console.warn('Unable to resize site setup map after view toggle:', error);
+    }
+
+    window.requestAnimationFrame(() => {
+      try {
+        activeMap?.resize?.();
+        refreshObstacles();
+      } catch (error) {
+        console.warn('Unable to settle site setup map after view toggle:', error);
+      }
+    });
+  });
 }
 
 function setFrontDoorFacing(value) {
@@ -692,6 +753,7 @@ function handleMapClick(lat, lng) {
   if (pendingPlacement === 'tree') {
     addTree(lat, lng);
     cancelPlacement();
+    setSiteSetupMobileView('controls');
     updateSetupStatus('Tree added.');
     return;
   }
@@ -699,6 +761,7 @@ function handleMapClick(lat, lng) {
   if (pendingPlacement === 'shed') {
     addShed(lat, lng);
     cancelPlacement();
+    setSiteSetupMobileView('controls');
     updateSetupStatus('Shed footprint added.');
     return;
   }
@@ -713,6 +776,7 @@ function handleMapClick(lat, lng) {
 
   addFence(fenceStartPoint, { lat, lng });
   cancelPlacement();
+  setSiteSetupMobileView('controls');
   updateSetupStatus('Fence added.');
 }
 
@@ -1050,6 +1114,7 @@ function hideSiteMapLoading() {
 export function cleanup() {
   document.removeEventListener('keydown', handleEscapeKey);
   document.body.classList.remove('map-placement-banner-active');
+  document.body.classList.remove('placement-map-active');
 
   mapSession.destroy();
   map = null;
@@ -1065,4 +1130,5 @@ export function cleanup() {
   activeObstacleTool = 'fence';
   pendingPlacement = null;
   fenceStartPoint = null;
+  siteSetupMobileView = 'controls';
 }

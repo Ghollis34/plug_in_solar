@@ -63,7 +63,7 @@ export function render() {
   const obstacleCount = getObstaclesState().length;
 
   return `
-    <div class="step-page step-page-map">
+    <div class="step-page step-page-map has-mobile-map-toggle">
       <div class="step-header">
         <div class="section-kicker">Step 3 · Placement</div>
         <h2 class="step-title">Choose Panel Locations</h2>
@@ -191,7 +191,10 @@ export function render() {
           </details>
 
           <button class="btn btn-primary w-full mb-md" id="btn-add-space">
-            📌 Add Ground / Garden Spot
+            📌 Tap map to add Ground / Garden Spot
+          </button>
+          <button class="btn btn-secondary w-full mb-md hidden" id="btn-undo-space" type="button">
+            ↶ Undo last panel spot
           </button>
 
           <div class="analysis-note mb-md" id="placement-status">
@@ -345,6 +348,8 @@ function initControls() {
       button.classList.add('active');
       updatePlacementRecommendations(button.dataset.type);
       updatePlacementGuide();
+      setPendingPlacement('space');
+      setPlacementMobileView('map');
     });
   });
 
@@ -373,6 +378,10 @@ function initControls() {
   document.getElementById('btn-add-space')?.addEventListener('click', () => {
     setPendingPlacement('space');
     setPlacementMobileView('map');
+  });
+
+  document.getElementById('btn-undo-space')?.addEventListener('click', () => {
+    undoLastSpace();
   });
 
   document.getElementById('btn-cancel-placement')?.addEventListener('click', () => {
@@ -474,8 +483,8 @@ function setPendingPlacement(mode) {
 
   let bannerText = 'Click the map to place';
   if (mode === 'space') {
-    bannerText = '📌 Click the map to drop a panel location';
-    updatePlacementStatus('Click on the map to drop a panel location.');
+    bannerText = '📌 Tap the map to drop this panel spot';
+    updatePlacementStatus('Tap the map once to place this panel spot.');
   } else if (mode === 'tree') {
     bannerText = '🌳 Click the map to place the tree';
     updatePlacementStatus('Click on the map to place the tree marker.');
@@ -840,6 +849,31 @@ function refreshPanelMarkers() {
   });
 }
 
+
+function undoLastSpace() {
+  const lastSpace = drawnSpaces[drawnSpaces.length - 1];
+  if (!lastSpace) {
+    updatePlacementStatus('No panel spots to undo yet.');
+    return;
+  }
+
+  drawnSpaces = drawnSpaces.slice(0, -1);
+  const markerObj = markers.find((entry) => entry.id === lastSpace.id);
+  if (markerObj) {
+    markerObj.marker.remove();
+    markers = markers.filter((entry) => entry.id !== lastSpace.id);
+  }
+
+  if (selectedSpaceId === lastSpace.id) {
+    selectedSpaceId = drawnSpaces[0]?.id || null;
+  }
+
+  updatePlacementStatus(`${lastSpace.name} removed. Pick a surface to place another spot.`);
+  updateSpacesList();
+  applyMarkerSelectionStyles();
+  updateNextButton();
+}
+
 function updateSpacesList() {
   const listEl = document.getElementById('spaces-list');
   if (!listEl) return;
@@ -849,7 +883,7 @@ function updateSpacesList() {
       <div class="card-flat card-flat-subtle" style="padding: 12px; margin-top: 12px;">
         <div style="font-weight: 600; margin-bottom: 4px;">No panel spots added yet</div>
         <div style="font-size: 0.85rem; color: var(--text-secondary);">
-          Pick a surface type, click the button above, then click the map where a panel could realistically go.
+          Pick roof, wall, balcony, fence, or garden — the map opens straight away so you can tap where the panel could realistically go.
         </div>
       </div>
     `;
@@ -957,6 +991,8 @@ function updateNextButton() {
     btn.disabled = drawnSpaces.length === 0;
   }
 
+  document.getElementById('btn-undo-space')?.classList.toggle('hidden', drawnSpaces.length === 0);
+
   updatePlacementGuide();
 }
 
@@ -1043,7 +1079,7 @@ function updatePlacementActionLabel(typeId) {
   if (!button) return;
 
   const typeInfo = getSpaceTypeInfo(typeId);
-  button.textContent = `📌 ${typeInfo.actionLabel || `Choose ${typeInfo.label} location`}`;
+  button.textContent = `📌 Tap map to add ${typeInfo.label}`;
 }
 
 function updatePlacementGuide() {
