@@ -247,20 +247,34 @@ curl -s https://wattpatch.co.uk/api/referrals/summary
 
 ## 9. Deploy updates later
 
-For each release:
+The repo includes `scripts/deploy-production.sh`, which is the canonical deploy command for the Hetzner server. It pulls `origin/main`, installs dependencies, runs tests, builds the Vite bundle, restarts the referral server, and checks public health endpoints.
+
+Manual deploy:
 
 ```bash
 ssh deploy@<HETZNER_IPV4>
 cd /var/www/wattpatch/current
-git fetch --prune origin
-git checkout main
-git reset --hard origin/main
-npm ci
-npm test
-npm run build
-sudo systemctl restart wattpatch-referral
-curl -I https://wattpatch.co.uk
-curl -s https://wattpatch.co.uk/health
+bash scripts/deploy-production.sh
+```
+
+Automated deploys are handled by `.github/workflows/ci-deploy.yml` when enabled. The workflow runs `npm ci`, `npm test`, and `npm run build` for PRs and pushes to `main`. On pushes to `main`, it deploys over SSH only when the repository variable below is set:
+
+```text
+WATTPATCH_DEPLOY_ENABLED=true
+```
+
+Required GitHub Actions secrets:
+
+```text
+WATTPATCH_HOST=<Hetzner IPv4 or hostname>
+WATTPATCH_USER=deploy
+WATTPATCH_SSH_KEY=<private SSH key allowed to log in as deploy>
+```
+
+The server-side `deploy` user must be able to restart the service non-interactively:
+
+```text
+deploy ALL=(root) NOPASSWD: /bin/systemctl restart wattpatch-referral
 ```
 
 ## 10. Post-launch checks

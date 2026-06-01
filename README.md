@@ -94,7 +94,7 @@ npm run referral-server
 
 See `docs/referrals-and-deployment.md` for Caddy routing, summary reporting, and partner account setup.
 
-For a full first-time production rollout, including buying `wattpatch.co.uk` and deploying to Hetzner Cloud, see `docs/hetzner-deployment.md`.
+For a full first-time production rollout, including buying `wattpatch.co.uk` and deploying to Hetzner Cloud, see `docs/hetzner-deployment.md`. Production releases use `.github/workflows/ci-deploy.yml` plus `scripts/deploy-production.sh`: PRs run tests/build, and pushes to `main` deploy to Hetzner once the production GitHub Actions secrets and `WATTPATCH_DEPLOY_ENABLED=true` variable are configured.
 
 ## Pricing feed
 

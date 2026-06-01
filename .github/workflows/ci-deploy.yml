@@ -1,0 +1,71 @@
+name: CI and Deploy WattPatch
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wattpatch-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-build:
+    name: Test and build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build production bundle
+        run: npm run build
+
+  deploy-production:
+    name: Deploy to Hetzner production
+    needs: test-build
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.WATTPATCH_DEPLOY_ENABLED == 'true'
+    environment: production
+    steps:
+      - name: Configure SSH key
+        env:
+          WATTPATCH_HOST: ${{ secrets.WATTPATCH_HOST }}
+          WATTPATCH_SSH_KEY: ${{ secrets.WATTPATCH_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$WATTPATCH_HOST"
+          test -n "$WATTPATCH_SSH_KEY"
+          mkdir -p ~/.ssh
+          printf '%s\n' "$WATTPATCH_SSH_KEY" > ~/.ssh/wattpatch_deploy
+          chmod 600 ~/.ssh/wattpatch_deploy
+          ssh-keyscan -H "$WATTPATCH_HOST" >> ~/.ssh/known_hosts
+
+      - name: Run server deploy
+        env:
+          WATTPATCH_HOST: ${{ secrets.WATTPATCH_HOST }}
+          WATTPATCH_USER: ${{ secrets.WATTPATCH_USER || 'deploy' }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/wattpatch_deploy \
+            -o BatchMode=yes \
+            "$WATTPATCH_USER@$WATTPATCH_HOST" \
+            'cd /var/www/wattpatch/current && WATTPATCH_DEPLOY_BRANCH=main bash scripts/deploy-production.sh'
