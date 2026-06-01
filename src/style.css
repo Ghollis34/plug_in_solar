@@ -771,6 +771,29 @@ body.map-placement-banner-active .satellite-toggle-btn {
   top: 72px;
 }
 
+.placement-mobile-view-toggle {
+  display: none;
+}
+
+.placement-mobile-view-btn {
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-secondary);
+  padding: 9px 13px;
+  font-family: var(--font-heading);
+  font-size: 0.82rem;
+  font-weight: 800;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.placement-mobile-view-btn.active {
+  background: linear-gradient(135deg, var(--accent-light), var(--accent));
+  color: #0B1120;
+  box-shadow: 0 10px 22px rgba(245, 158, 11, 0.24);
+}
+
 .map-overlay-bottom {
   position: absolute;
   bottom: 16px;
@@ -3732,6 +3755,71 @@ body {
     height: calc(100dvh - var(--header-height));
     min-height: 620px;
     overflow: hidden;
+  }
+
+  .step-page-map.placement-map-mode {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    height: 100dvh;
+    min-height: 0;
+    background: var(--bg-primary);
+  }
+
+  .step-page-map.placement-map-mode .map-overlay-panel,
+  .step-page-map.placement-map-mode .step-footer,
+  .step-page-map.placement-map-mode .map-overlay-bottom {
+    display: none;
+  }
+
+  .placement-mobile-view-toggle {
+    position: absolute;
+    top: calc(14px + env(safe-area-inset-top));
+    left: 16px;
+    right: 16px;
+    z-index: 28;
+    display: flex;
+    justify-content: center;
+    gap: 4px;
+    width: max-content;
+    max-width: calc(100% - 32px);
+    margin: 0 auto;
+    padding: 5px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 999px;
+    background: rgba(11, 17, 32, 0.82);
+    backdrop-filter: blur(18px);
+    box-shadow: var(--shadow-md);
+  }
+
+  .step-page-map.placement-map-mode .placement-mobile-view-toggle {
+    top: auto;
+    bottom: calc(16px + env(safe-area-inset-bottom));
+  }
+
+  body.map-placement-banner-active .step-page-map:not(.placement-map-mode) .placement-mobile-view-toggle {
+    display: none;
+  }
+
+  .step-page-map.placement-map-mode .map-placement-banner {
+    top: calc(12px + env(safe-area-inset-top));
+  }
+
+  .step-page-map.placement-map-mode .satellite-toggle-btn {
+    top: calc(14px + env(safe-area-inset-top));
+  }
+
+  body.map-placement-banner-active .step-page-map.placement-map-mode .satellite-toggle-btn {
+    top: calc(86px + env(safe-area-inset-top));
+  }
+
+  .step-page-map.placement-map-mode .map-interaction-hint {
+    top: calc(64px + env(safe-area-inset-top));
+  }
+
+  .step-page-map.placement-map-mode .map-container {
+    height: 100%;
+    min-height: 100%;
   }
 
   .step-page-map .step-body.full-width {

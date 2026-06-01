@@ -47,6 +47,7 @@ let heatmapRefineIdleHandle = null;
 let heatmapRenderNonce = 0;
 let initialSceneReady = false;
 let mapRuntime = null;
+let placementMobileView = 'controls';
 
 const mapSession = createMapStepSession();
 
@@ -84,6 +85,15 @@ export function render() {
         <div class="map-placement-banner hidden" id="placement-banner">
           <span id="placement-banner-text">Click the map to place</span>
           <button class="btn btn-sm btn-secondary" id="btn-cancel-placement" style="padding: 4px 12px; font-size: 0.75rem;">✕ Cancel</button>
+        </div>
+
+        <div class="placement-mobile-view-toggle" role="group" aria-label="Placement screen view">
+          <button type="button" class="placement-mobile-view-btn" id="btn-placement-view-map" data-placement-view="map" aria-pressed="false">
+            🗺 Full map
+          </button>
+          <button type="button" class="placement-mobile-view-btn active" id="btn-placement-view-controls" data-placement-view="controls" aria-pressed="true">
+            Controls
+          </button>
         </div>
 
         <div class="map-overlay-panel map-overlay-panel-planner">
@@ -322,6 +332,13 @@ function bindMapInteractions() {
 }
 
 function initControls() {
+  document.querySelectorAll('[data-placement-view]').forEach((button) => {
+    button.addEventListener('click', () => {
+      setPlacementMobileView(button.dataset.placementView);
+    });
+  });
+  setPlacementMobileView('controls', { resizeMap: false });
+
   document.querySelectorAll('.space-type-btn').forEach((button) => {
     button.addEventListener('click', () => {
       document.querySelectorAll('.space-type-btn').forEach((chip) => chip.classList.remove('active'));
@@ -355,6 +372,7 @@ function initControls() {
 
   document.getElementById('btn-add-space')?.addEventListener('click', () => {
     setPendingPlacement('space');
+    setPlacementMobileView('map');
   });
 
   document.getElementById('btn-cancel-placement')?.addEventListener('click', () => {
@@ -365,6 +383,44 @@ function initControls() {
   document.addEventListener('keydown', handleEscapeKey);
   updatePlacementRecommendations(document.querySelector('.space-type-btn.active')?.dataset.type || 'ground');
   updatePlacementGuide();
+}
+
+function setPlacementMobileView(view, options = {}) {
+  placementMobileView = view === 'map' ? 'map' : 'controls';
+
+  const page = document.querySelector('.step-page-map');
+  page?.classList.toggle('placement-map-mode', placementMobileView === 'map');
+
+  document.querySelectorAll('[data-placement-view]').forEach((button) => {
+    const isActive = button.dataset.placementView === placementMobileView;
+    button.classList.toggle('active', isActive);
+    button.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+  });
+
+  if (options.resizeMap !== false) {
+    queuePlacementMapResize();
+  }
+}
+
+function queuePlacementMapResize() {
+  if (!map) return;
+
+  window.requestAnimationFrame(() => {
+    try {
+      map?.resize?.();
+    } catch (error) {
+      console.warn('Unable to resize placement map after view toggle:', error);
+    }
+
+    window.requestAnimationFrame(() => {
+      try {
+        map?.resize?.();
+        refreshPanelMarkers();
+      } catch (error) {
+        console.warn('Unable to settle placement map after view toggle:', error);
+      }
+    });
+  });
 }
 
 function setActiveMode(mode) {
@@ -450,6 +506,7 @@ function handleMapClick(lat, lng) {
 
   const space = addSpace(lat, lng);
   cancelPlacement();
+  setPlacementMobileView('controls');
   const compareHint = drawnSpaces.length < 2
     ? ' Add another likely spot if you want us to compare options.'
     : '';
@@ -1567,6 +1624,7 @@ export function cleanup() {
   fenceStartPoint = null;
   activeMode = 'space';
   activeObstacleTool = 'fence';
+  placementMobileView = 'controls';
   selectedSpaceId = null;
   initialSceneReady = false;
   heatmapIdleHandle = null;
