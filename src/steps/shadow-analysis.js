@@ -3,6 +3,7 @@ import { getSunTimes, getMapLightFromSun, getShadowOverlayFeatures, rankSpaces, 
 import { escapeHtml } from '../utils/security.js';
 import { createMapStepSession } from '../utils/map-step-session.js';
 import { getShadowGuidance } from '../utils/shadow-guidance.js';
+import { setupMobileControlSheet } from '../utils/mobile-control-sheet.js';
 import {
   getAnalysisCenter,
   getBuildingsState,
@@ -20,6 +21,7 @@ let markers = [];
 let selectedSpaceId = null;
 let mapRuntime = null;
 let shadowMobileView = 'controls';
+let shadowControlSheet = null;
 
 const mapSession = createMapStepSession();
 
@@ -41,15 +43,6 @@ export function render() {
         <div class="map-loading-overlay" id="shadow-map-loading">
           <div class="loading-spinner"></div>
           <div id="shadow-map-loading-text">Loading shadow model…</div>
-        </div>
-
-        <div class="placement-mobile-view-toggle" role="group" aria-label="Shadow screen view">
-          <button type="button" class="placement-mobile-view-btn" id="btn-shadow-view-map" data-shadow-view="map" aria-pressed="false">
-            🗺 Full map
-          </button>
-          <button type="button" class="placement-mobile-view-btn active" id="btn-shadow-view-controls" data-shadow-view="controls" aria-pressed="true">
-            Controls
-          </button>
         </div>
 
         <div class="map-overlay-panel map-overlay-panel-shadow">
@@ -230,10 +223,8 @@ function addSpaceMarkers() {
 }
 
 function initControls() {
-  document.querySelectorAll('[data-shadow-view]').forEach((button) => {
-    button.addEventListener('click', () => {
-      setShadowMobileView(button.dataset.shadowView);
-    });
+  shadowControlSheet = setupMobileControlSheet({
+    onToggle: () => queueShadowMapResize(),
   });
   setShadowMobileView('controls', { resizeMap: false });
 
@@ -260,16 +251,8 @@ function initControls() {
 function setShadowMobileView(view, options = {}) {
   shadowMobileView = view === 'map' ? 'map' : 'controls';
 
-  const page = document.querySelector('.step-page-map');
-  const isMapMode = shadowMobileView === 'map';
-  page?.classList.toggle('placement-map-mode', isMapMode);
-  document.body.classList.toggle('placement-map-active', isMapMode);
-
-  document.querySelectorAll('[data-shadow-view]').forEach((button) => {
-    const isActive = button.dataset.shadowView === shadowMobileView;
-    button.classList.toggle('active', isActive);
-    button.setAttribute('aria-pressed', isActive ? 'true' : 'false');
-  });
+  const isMapFocused = shadowMobileView === 'map';
+  shadowControlSheet?.setCollapsed(isMapFocused, { notify: false });
 
   if (options.resizeMap !== false) {
     queueShadowMapResize();
@@ -586,6 +569,8 @@ export function cleanup() {
   markers = [];
   selectedSpaceId = null;
   shadowMobileView = 'controls';
+  shadowControlSheet?.destroy?.();
+  shadowControlSheet = null;
   mapRuntime = null;
   document.body.classList.remove('placement-map-active');
 
