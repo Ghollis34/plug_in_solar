@@ -17,12 +17,12 @@ export function render() {
             <div class="landing-hero-copy">
               <div class="landing-ref-badge">
                 <span class="material-symbols-outlined">bolt</span>
-                <span>Next-Gen Solar</span>
+                <span>WattPatch Solar Planner</span>
               </div>
 
               <h1 class="landing-ref-title">
-                The smartest way to find your perfect
-                <span class="text-gradient">plug-in solar spot.</span>
+                The smartest way to find your best
+                <span class="text-gradient">WattPatch.</span>
               </h1>
 
               <p class="landing-ref-description">
@@ -88,7 +88,7 @@ export function render() {
             <div class="landing-features-copy">
               <h2 class="landing-features-title">Precision Solar Planning</h2>
               <p class="landing-features-subtitle">
-                A premium planning flow for UK plug-in solar, built around real placement, shadowing, kit choice, and battery recovery.
+                A premium WattPatch planning flow for UK plug-in solar, built around real placement, shadowing, kit choice, and battery recovery.
               </p>
             </div>
             <div class="landing-features-accent">Expert Analysis</div>
@@ -186,13 +186,13 @@ export function render() {
 
       <footer class="landing-footer" id="landing-footer">
         <div class="landing-shell-ref landing-footer-inner">
-          <div class="landing-footer-brand">SolarSpot</div>
+          <div class="landing-footer-brand">WattPatch</div>
           <div class="landing-footer-links">
             <a href="#">Privacy Policy</a>
             <a href="#">Terms of Service</a>
             <a href="#">Methodology</a>
           </div>
-          <div class="landing-footer-copy">UK plug-in solar assessment</div>
+          <div class="landing-footer-copy">Find the best patch for UK plug-in solar</div>
         </div>
       </footer>
     </div>

@@ -8,7 +8,8 @@ import {
   reconcileDerivedState,
 } from './state-normalizers.js';
 
-const STORAGE_KEY = 'solarspot_state';
+const STORAGE_KEY = 'wattpatch_state';
+const LEGACY_STORAGE_KEYS = ['solarspot_state'];
 
 const defaultState = {
   currentStep: 0,
@@ -32,7 +33,7 @@ const listeners = new Map();
 /** Load state from localStorage */
 function loadState() {
   try {
-    const saved = localStorage.getItem(STORAGE_KEY);
+    const saved = getPersistedState();
     if (saved) {
       const parsed = JSON.parse(saved);
       state = { ...defaultState, ...normalizePersistedState(parsed, defaultState) };
@@ -40,6 +41,20 @@ function loadState() {
   } catch (e) {
     console.warn('Failed to load saved state:', e);
   }
+}
+
+function getPersistedState() {
+  const saved = localStorage.getItem(STORAGE_KEY);
+  if (saved) return saved;
+
+  for (const legacyKey of LEGACY_STORAGE_KEYS) {
+    const legacySaved = localStorage.getItem(legacyKey);
+    if (!legacySaved) continue;
+    localStorage.setItem(STORAGE_KEY, legacySaved);
+    return legacySaved;
+  }
+
+  return null;
 }
 
 /** Save state to localStorage */

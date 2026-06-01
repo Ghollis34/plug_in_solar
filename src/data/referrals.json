@@ -1,5 +1,5 @@
 {
-  "disclosure": "SolarSpot may earn a commission from selected partner links. This does not change the price you pay.",
+  "disclosure": "WattPatch may earn a commission from selected partner links. This does not change the price you pay.",
   "partners": {
     "ecoflow": {
       "name": "EcoFlow",
@@ -7,7 +7,7 @@
       "allowedHosts": ["uk.ecoflow.com", "ecoflow.com"],
       "defaultLabel": "View EcoFlow partner offer",
       "trackingType": "url-template",
-      "urlTemplate": "https://uk.ecoflow.com/products/{slug}?utm_source=solarspot&utm_medium=referral&utm_campaign={campaign}",
+      "urlTemplate": "https://uk.ecoflow.com/products/{slug}?utm_source=wattpatch&utm_medium=referral&utm_campaign={campaign}",
       "notes": "Replace product slugs and tracking template with the approved EcoFlow affiliate/deep-link format once the account is approved."
     },
     "thunder-energy": {
@@ -24,7 +24,7 @@
       "allowedHosts": ["zendure.com", "uk.zendure.com"],
       "defaultLabel": "View Zendure partner offer",
       "trackingType": "url-template",
-      "urlTemplate": "https://zendure.com/products/{slug}?utm_source=solarspot&utm_medium=referral&utm_campaign={campaign}",
+      "urlTemplate": "https://zendure.com/products/{slug}?utm_source=wattpatch&utm_medium=referral&utm_campaign={campaign}",
       "notes": "Replace slugs/template with the approved Zendure affiliate network URL once available."
     },
     "anker": {
