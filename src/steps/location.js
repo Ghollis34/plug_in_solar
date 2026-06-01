@@ -325,7 +325,9 @@ async function searchPlaces(query) {
         if (!suggestion?.location) return;
         setLocation(suggestion.location);
         resultsEl.classList.add('hidden');
-        document.getElementById('location-search').value = suggestion.location.displayName;
+        const searchInput = document.getElementById('location-search');
+        if (searchInput) searchInput.value = suggestion.location.displayName;
+        settleLocationSearchViewport(searchInput);
       });
     });
   } catch (err) {
@@ -422,15 +424,40 @@ async function reverseGeocode(lat, lng) {
       address: data.address,
     });
     setLocation(location);
-    document.getElementById('location-search').value = location.displayName;
+    const searchInput = document.getElementById('location-search');
+    if (searchInput) searchInput.value = location.displayName;
+    settleLocationSearchViewport(searchInput);
   } catch (err) {
     // Still set location even if reverse geocode fails
-    setLocation(createLocationFromPlace({
+    const fallbackLocation = createLocationFromPlace({
       lat,
       lon: lng,
       display_name: `${lat.toFixed(4)}, ${lng.toFixed(4)}`,
-    }));
+    });
+    setLocation(fallbackLocation);
+    const searchInput = document.getElementById('location-search');
+    if (searchInput) searchInput.value = fallbackLocation.displayName;
+    settleLocationSearchViewport(searchInput);
   }
+}
+
+function settleLocationSearchViewport(input) {
+  input?.blur?.();
+  document.getElementById('search-results')?.classList.add('hidden');
+
+  const resetScroll = () => {
+    window.scrollTo(0, 0);
+    document.documentElement.scrollTop = 0;
+    document.body.scrollTop = 0;
+    document.getElementById('step-content')?.scrollTo?.(0, 0);
+    document.querySelector('.step-page-map')?.scrollTo?.(0, 0);
+    document.querySelector('.step-body.full-width')?.scrollTo?.(0, 0);
+    queueLocationMapResize();
+  };
+
+  resetScroll();
+  window.requestAnimationFrame(resetScroll);
+  window.setTimeout(resetScroll, 250);
 }
 
 function setLocation(locationOrLat, lng, displayName, options = {}) {
