@@ -8,7 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "refresh-prices": "node scripts/refresh-live-pricing.mjs"
+    "refresh-prices": "node scripts/refresh-live-pricing.mjs",
+    "referral-server": "node scripts/referral-server.mjs"
   },
   "devDependencies": {
     "vite": "^8.0.4",

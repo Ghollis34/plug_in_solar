@@ -49,8 +49,11 @@ src/
   utils/                Pure helpers, state, pricing, maps, quote model, tests
 scripts/
   refresh-live-pricing.mjs
+  referral-server.mjs     Optional Node referral redirect/click tracking API
 public/data/
   live-pricing.json     Generated static price feed consumed by the SPA
+docs/
+  referrals-and-deployment.md
 ```
 
 ## Quote assumptions
@@ -78,6 +81,18 @@ When `pvgisProxyUrl` is set, requests are sent to:
 ```
 
 A serverless endpoint can implement that proxy by validating the `target` host is `re.jrc.ec.europa.eu`, fetching it server-side, and returning the JSON with browser-safe CORS headers.
+
+## Referral links and tracking
+
+Retailer CTAs are resolved through `src/data/referrals.json` and `src/utils/referrals.js`. The app safely falls back to direct retailer links until approved affiliate templates/tags are configured. Results-page CTAs show a partner-link disclosure and can send outbound click analytics when `referralTrackingEndpoint` is configured.
+
+For tracked redirects and basic click counts, run the optional Node server:
+
+```bash
+npm run referral-server
+```
+
+See `docs/referrals-and-deployment.md` for Caddy routing, summary reporting, and partner account setup.
 
 ## Pricing feed
 
