@@ -775,6 +775,18 @@ body.map-placement-banner-active .satellite-toggle-btn {
   display: none;
 }
 
+.mobile-sheet-handle {
+  display: none;
+}
+
+.mobile-sheet-grip {
+  display: block;
+  width: 42px;
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.62);
+}
+
 .placement-mobile-view-btn {
   border: 0;
   border-radius: 999px;
@@ -3814,57 +3826,53 @@ body {
   }
 
   .placement-mobile-view-toggle {
-    position: absolute;
-    top: calc(14px + env(safe-area-inset-top));
-    left: 16px;
-    right: 16px;
-    z-index: 28;
-    display: flex;
-    justify-content: center;
-    gap: 4px;
-    width: max-content;
-    max-width: calc(100% - 32px);
-    margin: 0 auto;
-    padding: 5px;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 999px;
-    background: rgba(11, 17, 32, 0.82);
-    backdrop-filter: blur(18px);
-    box-shadow: var(--shadow-md);
-  }
-
-  .step-page-map.placement-map-mode .placement-mobile-view-toggle {
-    top: calc(14px + env(safe-area-inset-top));
-    bottom: auto;
-    left: 16px;
-    right: auto;
-    margin: 0;
-    max-width: calc(100% - 32px);
-    z-index: 36;
-  }
-
-  .step-page-map.placement-map-mode .placement-mobile-view-btn[data-placement-view="map"],
-  .step-page-map.placement-map-mode .placement-mobile-view-btn[data-site-view="map"],
-  .step-page-map.placement-map-mode .placement-mobile-view-btn[data-shadow-view="map"] {
     display: none;
   }
 
-  .step-page-map.placement-map-mode .placement-mobile-view-btn[data-placement-view="controls"],
-  .step-page-map.placement-map-mode .placement-mobile-view-btn[data-site-view="controls"],
-  .step-page-map.placement-map-mode .placement-mobile-view-btn[data-shadow-view="controls"] {
-    background: linear-gradient(135deg, var(--accent-light), var(--accent));
-    color: #0B1120;
-    box-shadow: 0 10px 22px rgba(245, 158, 11, 0.28);
-    padding: 11px 15px;
+  .mobile-sheet-handle {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    border: 0;
+    border-radius: 18px;
+    padding: 8px 10px 10px;
+    margin: -4px 0 10px;
+    background: rgba(15, 23, 42, 0.72);
+    color: var(--text-primary);
+    font-family: var(--font-heading);
+    font-size: 0.86rem;
+    font-weight: 800;
+    cursor: grab;
+    touch-action: none;
+    user-select: none;
   }
 
-  .step-page-map.placement-map-mode .placement-mobile-view-btn[data-placement-view="controls"]::before,
-  .step-page-map.placement-map-mode .placement-mobile-view-btn[data-site-view="controls"]::before,
-  .step-page-map.placement-map-mode .placement-mobile-view-btn[data-shadow-view="controls"]::before {
-    content: '← ';
+  .mobile-sheet-handle:active {
+    cursor: grabbing;
   }
 
-  body.map-placement-banner-active .step-page-map:not(.placement-map-mode) .placement-mobile-view-toggle {
+  .mobile-sheet-handle small {
+    color: var(--text-muted);
+    font-size: 0.68rem;
+    font-weight: 700;
+  }
+
+  .step-page-map.mobile-sheet-collapsed .mobile-sheet-handle {
+    margin: 0;
+    padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+    background: rgba(11, 17, 32, 0.92);
+    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.28);
+  }
+
+  .step-page-map.mobile-sheet-collapsed .map-overlay-panel.mobile-control-sheet > :not(.mobile-sheet-handle) {
+    display: none;
+  }
+
+  .step-page-map.mobile-sheet-collapsed .map-overlay-panel:not(.mobile-control-sheet),
+  .step-page-map.mobile-sheet-collapsed .step-footer,
+  .step-page-map.mobile-sheet-collapsed .map-overlay-bottom {
     display: none;
   }
 
@@ -3919,6 +3927,18 @@ body {
     max-height: min(42vh, 330px);
     border-radius: 24px 24px 0 0;
     padding: 14px 16px calc(14px + env(safe-area-inset-bottom));
+    transition: max-height var(--transition-normal), padding var(--transition-normal), box-shadow var(--transition-normal);
+  }
+
+  .map-overlay-panel.mobile-control-sheet {
+    z-index: 24;
+  }
+
+  .step-page-map.mobile-sheet-collapsed .map-overlay-panel.mobile-control-sheet {
+    max-height: calc(56px + env(safe-area-inset-bottom));
+    min-height: calc(56px + env(safe-area-inset-bottom));
+    padding: 6px 12px 0;
+    overflow: hidden;
   }
 
   .map-overlay-panel .map-panel-header {

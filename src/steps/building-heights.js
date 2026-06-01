@@ -6,6 +6,7 @@ import { renderObstacleList } from '../utils/obstacle-list.js';
 import { getSelectedObstacleLabel, moveObstacleById, rotateShedById } from '../utils/site-obstacle-state.js';
 import { getShedRotationValue, setShedRotationValue, syncShedRotationUI } from '../utils/shed-rotation.js';
 import { getLocationState, getObstaclesState, getPrimaryBuilding } from '../utils/site-state.js';
+import { setupMobileControlSheet } from '../utils/mobile-control-sheet.js';
 
 let map = null;
 let mapLoaded = false;
@@ -21,6 +22,7 @@ let pendingPlacement = null;
 let fenceStartPoint = null;
 let mapRuntime = null;
 let siteSetupMobileView = 'controls';
+let siteSetupControlSheet = null;
 
 const mapSession = createMapStepSession();
 
@@ -57,15 +59,6 @@ export function render() {
         <div class="map-placement-banner hidden" id="site-setup-banner">
           <span id="site-setup-banner-text">Click the map to place</span>
           <button class="btn btn-sm btn-secondary" id="btn-cancel-site-placement" style="padding: 4px 12px; font-size: 0.75rem;">✕ Cancel</button>
-        </div>
-
-        <div class="placement-mobile-view-toggle" role="group" aria-label="Site setup screen view">
-          <button type="button" class="placement-mobile-view-btn" id="btn-site-view-map" data-site-view="map" aria-pressed="false">
-            🗺 Full map
-          </button>
-          <button type="button" class="placement-mobile-view-btn active" id="btn-site-view-controls" data-site-view="controls" aria-pressed="true">
-            Controls
-          </button>
         </div>
 
         <div class="map-overlay-panel map-overlay-panel-building">
@@ -306,6 +299,7 @@ export function init() {
 
   const token = mapSession.beginRun();
   showSiteMapLoading('Loading site map…');
+  initControls();
 
   mapSession.ensureRuntime(token)
     .then((runtime) => {
@@ -332,7 +326,6 @@ export function init() {
     })
     .then(() => {
       if (!mapSession.isCurrent(token)) return;
-      initControls();
       updateDirectionUI();
       updatePositionNote();
       updateObstaclePositionNote();
@@ -384,10 +377,8 @@ function bindMapInteractions() {
 }
 
 function initControls() {
-  document.querySelectorAll('[data-site-view]').forEach((button) => {
-    button.addEventListener('click', () => {
-      setSiteSetupMobileView(button.dataset.siteView);
-    });
+  siteSetupControlSheet = setupMobileControlSheet({
+    onToggle: () => queueSiteMapResize(),
   });
   setSiteSetupMobileView('controls', { resizeMap: false });
 
@@ -462,16 +453,8 @@ function initControls() {
 function setSiteSetupMobileView(view, options = {}) {
   siteSetupMobileView = view === 'map' ? 'map' : 'controls';
 
-  const page = document.querySelector('.step-page-map');
-  const isMapMode = siteSetupMobileView === 'map';
-  page?.classList.toggle('placement-map-mode', isMapMode);
-  document.body.classList.toggle('placement-map-active', isMapMode);
-
-  document.querySelectorAll('[data-site-view]').forEach((button) => {
-    const isActive = button.dataset.siteView === siteSetupMobileView;
-    button.classList.toggle('active', isActive);
-    button.setAttribute('aria-pressed', isActive ? 'true' : 'false');
-  });
+  const isMapFocused = siteSetupMobileView === 'map';
+  siteSetupControlSheet?.setCollapsed(isMapFocused, { notify: false });
 
   if (options.resizeMap !== false) {
     queueSiteMapResize();
@@ -1117,6 +1100,8 @@ export function cleanup() {
   document.body.classList.remove('placement-map-active');
 
   mapSession.destroy();
+  siteSetupControlSheet?.destroy?.();
+  siteSetupControlSheet = null;
   map = null;
 
   mapLoaded = false;

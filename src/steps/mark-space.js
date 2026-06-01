@@ -18,6 +18,7 @@ import { rotateShedById } from '../utils/site-obstacle-state.js';
 import { getShedRotationValue, setShedRotationValue, syncShedRotationUI } from '../utils/shed-rotation.js';
 import { getShedRoofPlacementGuidance } from '../utils/shed-roof.js';
 import { getAnnualSolarRecommendation } from '../utils/solar-placement.js';
+import { setupMobileControlSheet } from '../utils/mobile-control-sheet.js';
 import {
   getBuildingsState,
   getLocationState,
@@ -48,6 +49,7 @@ let heatmapRenderNonce = 0;
 let initialSceneReady = false;
 let mapRuntime = null;
 let placementMobileView = 'controls';
+let placementControlSheet = null;
 
 const mapSession = createMapStepSession();
 
@@ -85,15 +87,6 @@ export function render() {
         <div class="map-placement-banner hidden" id="placement-banner">
           <span id="placement-banner-text">Click the map to place</span>
           <button class="btn btn-sm btn-secondary" id="btn-cancel-placement" style="padding: 4px 12px; font-size: 0.75rem;">✕ Cancel</button>
-        </div>
-
-        <div class="placement-mobile-view-toggle" role="group" aria-label="Placement screen view">
-          <button type="button" class="placement-mobile-view-btn" id="btn-placement-view-map" data-placement-view="map" aria-pressed="false">
-            🗺 Full map
-          </button>
-          <button type="button" class="placement-mobile-view-btn active" id="btn-placement-view-controls" data-placement-view="controls" aria-pressed="true">
-            Controls
-          </button>
         </div>
 
         <div class="map-overlay-panel map-overlay-panel-planner">
@@ -335,10 +328,8 @@ function bindMapInteractions() {
 }
 
 function initControls() {
-  document.querySelectorAll('[data-placement-view]').forEach((button) => {
-    button.addEventListener('click', () => {
-      setPlacementMobileView(button.dataset.placementView);
-    });
+  placementControlSheet = setupMobileControlSheet({
+    onToggle: () => queuePlacementMapResize(),
   });
   setPlacementMobileView('controls', { resizeMap: false });
 
@@ -397,16 +388,8 @@ function initControls() {
 function setPlacementMobileView(view, options = {}) {
   placementMobileView = view === 'map' ? 'map' : 'controls';
 
-  const page = document.querySelector('.step-page-map');
-  const isMapMode = placementMobileView === 'map';
-  page?.classList.toggle('placement-map-mode', isMapMode);
-  document.body.classList.toggle('placement-map-active', isMapMode);
-
-  document.querySelectorAll('[data-placement-view]').forEach((button) => {
-    const isActive = button.dataset.placementView === placementMobileView;
-    button.classList.toggle('active', isActive);
-    button.setAttribute('aria-pressed', isActive ? 'true' : 'false');
-  });
+  const isMapFocused = placementMobileView === 'map';
+  placementControlSheet?.setCollapsed(isMapFocused, { notify: false });
 
   if (options.resizeMap !== false) {
     queuePlacementMapResize();
@@ -1655,6 +1638,8 @@ export function cleanup() {
   document.removeEventListener('keydown', handleEscapeKey);
 
   mapSession.destroy();
+  placementControlSheet?.destroy?.();
+  placementControlSheet = null;
   map = null;
 
   markers = [];
