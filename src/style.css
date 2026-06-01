@@ -3777,6 +3777,47 @@ body {
     padding-right: 18px;
   }
 
+  #app-header.has-progress {
+    height: 64px;
+  }
+
+  #app-header.has-progress .header-inner {
+    height: 64px;
+    align-items: center;
+    padding-top: 0;
+  }
+
+  #app-header.has-progress .logo {
+    gap: 8px;
+    font-size: 1.15rem;
+  }
+
+  #app-header.has-progress .logo-icon {
+    font-size: 1.25rem;
+  }
+
+  #app-header.has-progress .btn-reset {
+    display: none !important;
+  }
+
+  #app-header.has-progress #progress-bar {
+    bottom: 8px;
+    padding: 0 18px;
+  }
+
+  #app-header.has-progress .progress-track {
+    height: 3px;
+    margin-bottom: 0;
+  }
+
+  #app-header.has-progress .progress-steps {
+    display: none;
+  }
+
+  #app-header.has-progress + #wizard-container {
+    padding-top: 64px;
+  }
+
   .progress-steps {
     justify-content: flex-start;
   }
@@ -3791,8 +3832,8 @@ body {
   }
 
   .step-page-map {
-    height: calc(100dvh - var(--header-height));
-    min-height: 620px;
+    height: calc(100dvh - 64px);
+    min-height: 0;
     overflow: hidden;
   }
 
@@ -3916,10 +3957,10 @@ body {
     bottom: 0;
     width: 100%;
     max-width: none;
-    height: min(42vh, 330px);
-    max-height: min(42vh, 330px);
+    height: auto;
+    max-height: min(42dvh, 340px);
     border-radius: 24px 24px 0 0;
-    padding: 14px 16px calc(14px + env(safe-area-inset-bottom));
+    padding: 12px 16px calc(14px + env(safe-area-inset-bottom));
     overflow-y: auto;
     overscroll-behavior: contain;
     transform: translate3d(0, 0, 0);
@@ -3999,7 +4040,7 @@ body {
   .step-page-map .step-footer {
     left: 16px;
     right: 16px;
-    bottom: calc(min(42vh, 330px) + 10px);
+    bottom: calc(min(42dvh, 340px) + 10px);
     transform: none;
     width: auto;
     padding: 10px;
@@ -4009,6 +4050,86 @@ body {
   .step-page-map .step-footer .btn {
     flex: 1 1 0;
     min-width: 0;
+  }
+
+  .map-overlay-panel.mobile-control-sheet .map-panel-header {
+    margin-bottom: 8px;
+  }
+
+  .map-overlay-panel.mobile-control-sheet .map-panel-kicker,
+  .map-overlay-panel.mobile-control-sheet .map-panel-pill,
+  .map-overlay-panel.mobile-control-sheet .task-guide-list,
+  .map-overlay-panel.mobile-control-sheet .disclaimer,
+  .map-overlay-panel.mobile-control-sheet .shadow-reassurance-note,
+  .map-overlay-panel.mobile-control-sheet .shadow-details-panel {
+    display: none;
+  }
+
+  .map-overlay-panel.mobile-control-sheet .task-guide-card,
+  .map-overlay-panel.mobile-control-sheet .card-flat-subtle,
+  .map-overlay-panel.mobile-control-sheet .metric-glass-card {
+    padding: 10px 12px;
+    margin-bottom: 10px;
+  }
+
+  .map-overlay-panel.mobile-control-sheet .task-guide-summary,
+  .map-overlay-panel.mobile-control-sheet .analysis-note,
+  .map-overlay-panel.mobile-control-sheet .metric-glass-note,
+  .map-overlay-panel.mobile-control-sheet p {
+    font-size: 0.78rem;
+    line-height: 1.42;
+  }
+
+  .map-overlay-panel.mobile-control-sheet .mobile-sheet-footer {
+    position: sticky;
+    left: auto;
+    right: auto;
+    bottom: calc(-14px - env(safe-area-inset-bottom));
+    transform: none;
+    width: 100%;
+    max-width: none;
+    margin: 10px 0 0;
+    padding: 10px 0 0;
+    display: flex;
+    flex-direction: row;
+    gap: 8px;
+    background: rgba(14, 19, 31, 0.96);
+    border: 0;
+    border-top: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 0;
+    box-shadow: none;
+    backdrop-filter: blur(16px);
+    pointer-events: auto;
+    z-index: 2;
+  }
+
+  .map-overlay-panel.mobile-control-sheet .mobile-sheet-footer .btn {
+    flex: 1 1 0;
+    min-width: 0;
+    padding: 11px 10px;
+    font-size: 0.86rem;
+  }
+
+  .map-overlay-panel.mobile-control-sheet .mobile-sheet-footer .btn-secondary {
+    max-width: 34%;
+  }
+
+  .map-overlay-panel.mobile-control-sheet .mobile-sheet-merged-panel {
+    position: static;
+    inset: auto;
+    width: auto;
+    max-width: none;
+    max-height: none;
+    margin: 12px 0 0;
+    padding: 12px;
+    border-radius: 18px;
+    background: rgba(10, 15, 25, 0.42);
+    box-shadow: none;
+    backdrop-filter: none;
+  }
+
+  .map-interaction-hint {
+    display: none;
   }
 
   .task-guide-item {

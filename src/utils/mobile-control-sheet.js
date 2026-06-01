@@ -8,6 +8,21 @@ export function setupMobileControlSheet(options = {}) {
 
   panel.classList.add('mobile-control-sheet');
 
+  const mobileMediaQuery = window.matchMedia?.('(max-width: 768px)');
+  const footer = page.querySelector(options.footerSelector || ':scope > .step-footer');
+  const footerHome = footer ? {
+    parent: footer.parentNode,
+    nextSibling: footer.nextSibling,
+  } : null;
+  const mergedPanels = (options.mergePanelSelectors || [])
+    .flatMap((selector) => [...page.querySelectorAll(selector)])
+    .filter((entry) => entry && entry !== panel)
+    .map((entry) => ({
+      element: entry,
+      parent: entry.parentNode,
+      nextSibling: entry.nextSibling,
+    }));
+
   const handle = document.createElement('button');
   handle.type = 'button';
   handle.className = 'mobile-sheet-handle';
@@ -43,6 +58,46 @@ export function setupMobileControlSheet(options = {}) {
     });
   };
 
+  const restoreElement = (entry) => {
+    if (!entry?.element || !entry.parent) return;
+    entry.element.removeAttribute('aria-hidden');
+    entry.element.inert = false;
+    if (entry.nextSibling?.parentNode === entry.parent) {
+      entry.parent.insertBefore(entry.element, entry.nextSibling);
+    } else {
+      entry.parent.appendChild(entry.element);
+    }
+  };
+
+  const shouldUseMobileLayout = () => mobileMediaQuery?.matches ?? window.innerWidth <= 768;
+
+  const syncMobileLayout = () => {
+    const useMobileLayout = shouldUseMobileLayout();
+    page.classList.toggle('mobile-sheet-nav-merged', Boolean(useMobileLayout && footer));
+
+    if (footer && footerHome) {
+      if (useMobileLayout && footer.parentNode !== panel) {
+        footer.classList.add('mobile-sheet-footer');
+        panel.appendChild(footer);
+      } else if (!useMobileLayout && footer.parentNode === panel) {
+        footer.classList.remove('mobile-sheet-footer');
+        restoreElement({ element: footer, ...footerHome });
+      }
+    }
+
+    mergedPanels.forEach((entry) => {
+      if (useMobileLayout && entry.element.parentNode !== panel) {
+        entry.element.classList.add('mobile-sheet-merged-panel');
+        panel.appendChild(entry.element);
+      } else if (!useMobileLayout && entry.element.parentNode === panel) {
+        entry.element.classList.remove('mobile-sheet-merged-panel');
+        restoreElement(entry);
+      }
+    });
+
+    setSheetContentInteractive(!collapsed);
+  };
+
   const queueResize = () => {
     window.requestAnimationFrame(() => {
       options.onToggle?.({ collapsed });
@@ -61,6 +116,7 @@ export function setupMobileControlSheet(options = {}) {
       collapsed ? 'Open map controls' : 'Hide map controls'
     );
     setSheetContentInteractive(!collapsed);
+    syncMobileLayout();
 
     if (updateOptions.notify !== false) {
       queueResize();
@@ -191,6 +247,8 @@ export function setupMobileControlSheet(options = {}) {
   handle.addEventListener('touchend', handleTouchEnd);
   handle.addEventListener('touchcancel', handleTouchCancel);
   handle.addEventListener('click', handleClick);
+  mobileMediaQuery?.addEventListener?.('change', syncMobileLayout);
+  window.addEventListener('resize', syncMobileLayout);
 
   setCollapsed(Boolean(options.collapsed), { notify: false });
 
@@ -198,9 +256,21 @@ export function setupMobileControlSheet(options = {}) {
     setCollapsed,
     isCollapsed: () => collapsed,
     destroy: () => {
-      page.classList.remove('mobile-sheet-collapsed', 'mobile-sheet-expanded', 'mobile-sheet-dragging');
+      mobileMediaQuery?.removeEventListener?.('change', syncMobileLayout);
+      window.removeEventListener('resize', syncMobileLayout);
+      page.classList.remove('mobile-sheet-collapsed', 'mobile-sheet-expanded', 'mobile-sheet-dragging', 'mobile-sheet-nav-merged');
       panel.style.removeProperty('--mobile-sheet-drag-offset');
       setSheetContentInteractive(true);
+      if (footer && footerHome && footer.parentNode === panel) {
+        footer.classList.remove('mobile-sheet-footer');
+        restoreElement({ element: footer, ...footerHome });
+      }
+      mergedPanels.forEach((entry) => {
+        if (entry.element.parentNode === panel) {
+          entry.element.classList.remove('mobile-sheet-merged-panel');
+          restoreElement(entry);
+        }
+      });
       panel.classList.remove('mobile-control-sheet');
       handle.remove();
     },
