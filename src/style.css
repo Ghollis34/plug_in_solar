@@ -3852,6 +3852,21 @@ body {
     top: calc(68px + env(safe-area-inset-top));
   }
 
+  .step-page-map .satellite-toggle-btn {
+    position: fixed;
+    top: calc(76px + env(safe-area-inset-top));
+    right: 12px;
+    z-index: 80;
+    padding: 9px 12px;
+    font-size: 0.8rem;
+    transform: translateZ(0);
+  }
+
+  .step-page-map .satellite-toggle-btn:hover,
+  .step-page-map .satellite-toggle-btn.active {
+    transform: translateZ(0);
+  }
+
   body.placement-map-active #app-header {
     display: none;
   }
