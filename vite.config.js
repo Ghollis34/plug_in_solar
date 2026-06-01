@@ -2,6 +2,11 @@ import { defineConfig } from 'vite';
 
 export default defineConfig({
   build: {
+    // Keep previous hashed chunks on the VPS so a phone with a cached app shell can
+    // still load a lazy step after a new deploy. Periodic cleanup can prune old
+    // assets later, but deleting every chunk during deploy causes dynamic imports
+    // to fail for live mobile testers.
+    emptyOutDir: false,
     rollupOptions: {
       output: {
         manualChunks(id) {

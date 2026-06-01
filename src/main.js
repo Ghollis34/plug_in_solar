@@ -19,13 +19,16 @@ function init() {
   const savedCurrentStep = Number.isFinite(getState('currentStep')) ? getState('currentStep') : 0;
   const savedMaxVisitedStep = Number.isFinite(getState('maxVisitedStep')) ? getState('maxVisitedStep') : 0;
   const derivedMaxVisitedStep = Math.max(0, savedCurrentStep, savedMaxVisitedStep);
+  const reloadStep = getPendingReloadStep();
 
   if (derivedMaxVisitedStep !== savedMaxVisitedStep) {
     setState({ maxVisitedStep: derivedMaxVisitedStep });
   }
 
-  // Restore step from state (but always start from landing)
-  currentStep = 0;
+  // Restore step only after a forced stale-chunk reload; normal visits still start from landing.
+  currentStep = Number.isFinite(reloadStep)
+    ? Math.min(Math.max(0, reloadStep), getHighestReachableStepFromState())
+    : 0;
   renderStep(currentStep);
 
   // Listen for wizard navigation events
@@ -128,6 +131,11 @@ async function renderStep(stepIndex) {
   } catch (error) {
     if (requestId !== renderRequestId) return;
     console.error(`Failed to load step "${step.id}":`, error);
+
+    if (shouldReloadForStaleChunk(step, stepIndex, error)) {
+      return;
+    }
+
     contentEl.innerHTML = `
       <div class="loading-overlay" style="min-height: 40vh;">
         <div style="font-size: 1.5rem; color: var(--danger);">⚠️</div>
@@ -141,6 +149,7 @@ async function renderStep(stepIndex) {
     return;
   }
   if (requestId !== renderRequestId) return;
+  clearChunkReloadRetry(step.id);
 
   contentEl.innerHTML = stepModule.render();
   currentModule = stepModule;
@@ -161,6 +170,50 @@ function renderStepLoading(stepLabel) {
       <p>Loading ${stepLabel.toLowerCase()}…</p>
     </div>
   `;
+}
+
+function getPendingReloadStep() {
+  try {
+    const rawStep = sessionStorage.getItem('wattpatch_reload_step');
+    sessionStorage.removeItem('wattpatch_reload_step');
+    const stepIndex = Number(rawStep);
+    return Number.isFinite(stepIndex) ? stepIndex : null;
+  } catch {
+    return null;
+  }
+}
+
+function clearChunkReloadRetry(stepId) {
+  try {
+    sessionStorage.removeItem(`wattpatch_chunk_reload_${stepId}`);
+  } catch {}
+}
+
+function shouldReloadForStaleChunk(step, stepIndex, error) {
+  const message = `${error?.message || ''} ${error?.stack || ''}`.toLowerCase();
+  const looksLikeChunkLoadFailure = message.includes('failed to fetch dynamically imported module')
+    || message.includes('importing a module script failed')
+    || message.includes('error loading dynamically imported module')
+    || message.includes('loading chunk')
+    || message.includes('module script');
+
+  if (!looksLikeChunkLoadFailure) return false;
+
+  try {
+    const retryKey = `wattpatch_chunk_reload_${step.id}`;
+    if (sessionStorage.getItem(retryKey)) {
+      return false;
+    }
+
+    sessionStorage.setItem(retryKey, '1');
+    sessionStorage.setItem('wattpatch_reload_step', String(stepIndex));
+    const reloadUrl = new URL(window.location.href);
+    reloadUrl.searchParams.set('app_reload', String(Date.now()));
+    window.location.replace(reloadUrl.toString());
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function loadStepModule(step) {

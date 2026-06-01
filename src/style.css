@@ -3832,7 +3832,7 @@ body {
   .mobile-sheet-handle {
     display: flex;
     width: 100%;
-    min-height: 34px;
+    min-height: 56px;
     align-items: flex-start;
     justify-content: center;
     border: 0;
@@ -3936,7 +3936,7 @@ body {
 
   .step-page-map.mobile-sheet-collapsed .map-overlay-panel.mobile-control-sheet {
     overflow: hidden;
-    transform: translate3d(0, calc(100% - 42px - env(safe-area-inset-bottom)), 0);
+    transform: translate3d(0, calc(100% - 56px - env(safe-area-inset-bottom)), 0);
     box-shadow: 0 -14px 34px rgba(0, 0, 0, 0.26);
   }
 

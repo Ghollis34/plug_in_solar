@@ -20,11 +20,13 @@ export function setupMobileControlSheet(options = {}) {
   let startOffset = 0;
   let currentOffset = 0;
   let dragMoved = false;
+  let touchDragActive = false;
+  let lastTouchEndAt = 0;
 
   const getMaxOffset = () => {
     const panelHeight = panel.getBoundingClientRect().height;
     const handleHeight = handle.getBoundingClientRect().height;
-    const safePeek = Math.max(handleHeight, 42);
+    const safePeek = Math.max(handleHeight, 56);
     return Math.max(0, panelHeight - safePeek);
   };
 
@@ -70,53 +72,109 @@ export function setupMobileControlSheet(options = {}) {
     panel.style.setProperty('--mobile-sheet-drag-offset', `${currentOffset}px`);
   };
 
-  const handlePointerDown = (event) => {
-    startY = event.clientY;
+  const beginDrag = (clientY) => {
+    startY = clientY;
     startOffset = collapsed ? getMaxOffset() : 0;
     currentOffset = startOffset;
     dragMoved = false;
     page.classList.add('mobile-sheet-dragging');
     panel.style.setProperty('--mobile-sheet-drag-offset', `${startOffset}px`);
-    handle.setPointerCapture?.(event.pointerId);
   };
 
-  const handlePointerMove = (event) => {
-    if (startY == null) return;
+  const moveDrag = (clientY) => {
+    if (startY == null) return false;
 
-    const deltaY = event.clientY - startY;
+    const deltaY = clientY - startY;
     if (Math.abs(deltaY) > 4) {
       dragMoved = true;
     }
 
     applyDragOffset(startOffset + deltaY);
-    event.preventDefault();
+    return true;
   };
 
-  const handlePointerUp = (event) => {
-    if (startY == null) return;
+  const endDrag = () => {
+    if (startY == null) return false;
 
     const maxOffset = getMaxOffset();
     const shouldCollapse = currentOffset > maxOffset * 0.45;
+    const wasMoved = dragMoved;
 
     startY = null;
-    handle.releasePointerCapture?.(event.pointerId);
 
-    if (dragMoved) {
+    if (wasMoved) {
       setCollapsed(shouldCollapse);
-      return;
+      return true;
     }
 
     page.classList.remove('mobile-sheet-dragging');
     panel.style.removeProperty('--mobile-sheet-drag-offset');
+    return false;
   };
 
-  const handlePointerCancel = () => {
+  const cancelDrag = () => {
     startY = null;
     dragMoved = false;
     setCollapsed(collapsed, { notify: false });
   };
 
+  const handlePointerDown = (event) => {
+    if (touchDragActive) return;
+    beginDrag(event.clientY);
+    handle.setPointerCapture?.(event.pointerId);
+  };
+
+  const handlePointerMove = (event) => {
+    if (touchDragActive) return;
+    if (moveDrag(event.clientY)) {
+      event.preventDefault();
+    }
+  };
+
+  const handlePointerUp = (event) => {
+    if (touchDragActive) return;
+    handle.releasePointerCapture?.(event.pointerId);
+    endDrag();
+  };
+
+  const handlePointerCancel = () => {
+    if (touchDragActive) return;
+    cancelDrag();
+  };
+
+  const handleTouchStart = (event) => {
+    const touch = event.touches?.[0];
+    if (!touch) return;
+    touchDragActive = true;
+    beginDrag(touch.clientY);
+  };
+
+  const handleTouchMove = (event) => {
+    const touch = event.touches?.[0];
+    if (!touch) return;
+    if (moveDrag(touch.clientY)) {
+      event.preventDefault();
+    }
+  };
+
+  const handleTouchEnd = () => {
+    const wasTap = !endDrag();
+    lastTouchEndAt = Date.now();
+    touchDragActive = false;
+    if (wasTap) {
+      setCollapsed(!collapsed);
+    }
+  };
+
+  const handleTouchCancel = () => {
+    touchDragActive = false;
+    cancelDrag();
+  };
+
   const handleClick = () => {
+    if (Date.now() - lastTouchEndAt < 500) {
+      return;
+    }
     if (dragMoved) {
       dragMoved = false;
       return;
@@ -128,6 +186,10 @@ export function setupMobileControlSheet(options = {}) {
   handle.addEventListener('pointermove', handlePointerMove);
   handle.addEventListener('pointerup', handlePointerUp);
   handle.addEventListener('pointercancel', handlePointerCancel);
+  handle.addEventListener('touchstart', handleTouchStart, { passive: false });
+  handle.addEventListener('touchmove', handleTouchMove, { passive: false });
+  handle.addEventListener('touchend', handleTouchEnd);
+  handle.addEventListener('touchcancel', handleTouchCancel);
   handle.addEventListener('click', handleClick);
 
   setCollapsed(Boolean(options.collapsed), { notify: false });
