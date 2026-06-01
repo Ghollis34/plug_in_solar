@@ -376,8 +376,7 @@ function initControls() {
   });
 
   document.getElementById('btn-cancel-placement')?.addEventListener('click', () => {
-    cancelPlacement();
-    updatePlacementStatus('Placement cancelled.');
+    cancelPlacementAndRestoreControls();
   });
 
   document.addEventListener('keydown', handleEscapeKey);
@@ -466,8 +465,14 @@ function setPendingPlacement(mode) {
 
   let bannerText = 'Click the map to place';
   if (mode === 'space') {
-    bannerText = '📌 Tap the map to drop this panel spot';
-    updatePlacementStatus('Tap the map once to place this panel spot.');
+    const activeTypeId = getActiveSpaceTypeId();
+    if (activeTypeId === 'fence' && !hasDrawnFenceObstacle()) {
+      bannerText = '📌 Tap the map to place the fence spot';
+      updatePlacementStatus('No fence line was marked in Site Setup, so this will place a fence or boundary panel spot manually. Tap the map once, or cancel to choose a different surface.');
+    } else {
+      bannerText = '📌 Tap the map to drop this panel spot';
+      updatePlacementStatus('Tap the map once to place this panel spot.');
+    }
   } else if (mode === 'tree') {
     bannerText = '🌳 Click the map to place the tree';
     updatePlacementStatus('Click on the map to place the tree marker.');
@@ -493,6 +498,12 @@ function cancelPlacement() {
 
   hidePlacementBanner();
   updateCancelFenceButton();
+}
+
+function cancelPlacementAndRestoreControls() {
+  cancelPlacement();
+  setPlacementMobileView('controls');
+  updatePlacementStatus('Placement cancelled. Choose a surface when you are ready to try again.');
 }
 
 function handleMapClick(lat, lng) {
@@ -1012,8 +1023,7 @@ function updateCancelFenceButton() {
 
 function handleEscapeKey(e) {
   if (e.key === 'Escape' && (pendingPlacement || fenceStartPoint)) {
-    cancelPlacement();
-    updatePlacementStatus('Placement cancelled.');
+    cancelPlacementAndRestoreControls();
   }
 }
 
@@ -1099,7 +1109,9 @@ function updateOrientationNote(typeId, recommendation) {
   if (!noteEl) return;
 
   if (typeId === 'fence') {
-    noteEl.textContent = `Fence-mounted panels snap onto the nearest drawn fence and stay on your side of the boundary. If a snap fails, we fall back to ${degreesToCompass(recommendation.orientation, 'long')} (${recommendation.orientation}°).`;
+    noteEl.textContent = hasDrawnFenceObstacle()
+      ? `Fence-mounted panels snap onto the nearest drawn fence and stay on your side of the boundary. If a snap fails, we fall back to ${degreesToCompass(recommendation.orientation, 'long')} (${recommendation.orientation}°).`
+      : `No fence line has been marked, so a fence or boundary panel spot will be placed manually. The fallback facing is ${degreesToCompass(recommendation.orientation, 'long')} (${recommendation.orientation}°).`;
     return;
   }
 
@@ -1158,6 +1170,10 @@ function getNearestFenceAlignment(lat, lng) {
   }).sort((a, b) => a.distanceM - b.distanceM);
 
   return scored[0]?.distanceM <= SURFACE_SNAP_DISTANCE_M ? scored[0] : null;
+}
+
+function hasDrawnFenceObstacle() {
+  return drawnObstacles.some((obstacle) => obstacle.type === 'fence' && obstacle.points?.length >= 2);
 }
 
 function drawHousePreview() {
