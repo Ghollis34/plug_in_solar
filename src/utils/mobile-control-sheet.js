@@ -1,3 +1,5 @@
+const COLLAPSED_SHEET_PEEK_PX = 44;
+
 export function setupMobileControlSheet(options = {}) {
   const page = document.querySelector(options.pageSelector || '.step-page-map');
   const panel = page?.querySelector(options.panelSelector || '.map-overlay-panel');
@@ -41,7 +43,7 @@ export function setupMobileControlSheet(options = {}) {
   const getMaxOffset = () => {
     const panelHeight = panel.getBoundingClientRect().height;
     const handleHeight = handle.getBoundingClientRect().height;
-    const safePeek = Math.max(handleHeight, 56);
+    const safePeek = Math.max(handleHeight, COLLAPSED_SHEET_PEEK_PX);
     return Math.max(0, panelHeight - safePeek);
   };
 
