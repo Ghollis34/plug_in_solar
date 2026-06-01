@@ -169,6 +169,10 @@ h4 { font-size: 1.25rem; }
   color: var(--accent);
 }
 
+.reset-label-short {
+  display: none;
+}
+
 /* --- Wizard Container --- */
 #wizard-container {
   padding-top: var(--header-height);
@@ -3797,7 +3801,23 @@ body {
   }
 
   #app-header.has-progress .btn-reset {
-    display: none !important;
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: center;
+    min-height: 34px;
+    padding: 7px 12px;
+    font-size: 0.78rem;
+    line-height: 1;
+    white-space: nowrap;
+    flex: 0 0 auto;
+  }
+
+  #app-header.has-progress .reset-label-full {
+    display: none;
+  }
+
+  #app-header.has-progress .reset-label-short {
+    display: inline;
   }
 
   #app-header.has-progress #progress-bar {
@@ -3888,13 +3908,13 @@ body {
   .mobile-sheet-handle {
     display: flex;
     width: 100%;
-    min-height: 56px;
-    align-items: flex-start;
+    min-height: 44px;
+    align-items: center;
     justify-content: center;
     border: 0;
     border-radius: 24px 24px 0 0;
-    padding: 10px 12px 8px;
-    margin: -4px 0 6px;
+    padding: 4px 12px;
+    margin: -8px 0 0;
     background: transparent;
     color: var(--text-primary);
     cursor: grab;
@@ -3992,7 +4012,7 @@ body {
 
   .step-page-map.mobile-sheet-collapsed .map-overlay-panel.mobile-control-sheet {
     overflow: hidden;
-    transform: translate3d(0, calc(100% - 56px - env(safe-area-inset-bottom)), 0);
+    transform: translate3d(0, calc(100% - 44px - env(safe-area-inset-bottom)), 0);
     box-shadow: 0 -14px 34px rgba(0, 0, 0, 0.26);
   }
 
