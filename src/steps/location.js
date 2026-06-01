@@ -63,7 +63,7 @@ export function render() {
                 <span class="task-guide-index">1</span>
                 <div class="task-guide-copy">
                   <strong>Find the property</strong>
-                  <span>Type a postcode or address, or click directly on the map if search misses it.</span>
+                  <span>Type a postcode/address. If house numbers are missing, use the postcode result then tap the exact roof on the map.</span>
                 </div>
                 <span class="task-guide-status" id="location-guide-search-status">To do</span>
               </div>
@@ -71,7 +71,7 @@ export function render() {
                 <span class="task-guide-index">2</span>
                 <div class="task-guide-copy">
                   <strong>Check the pin is on the right home</strong>
-                  <span>Once selected, the map will fly in and show a marker on the property.</span>
+                  <span>Check the marker. If it picked the wrong home, tap the correct roof or press Change.</span>
                 </div>
                 <span class="task-guide-status" id="location-guide-confirm-status">Waiting</span>
               </div>
@@ -92,14 +92,17 @@ export function render() {
                 <div class="location-selection-title" id="location-name"></div>
                 <div class="location-selection-meta">Selected property</div>
               </div>
-              <span class="location-selection-status">Confirmed</span>
+              <div class="location-selection-actions">
+                <span class="location-selection-status">Confirmed</span>
+                <button type="button" class="btn btn-sm btn-secondary" id="btn-clear-location">Change</button>
+              </div>
             </div>
             <div class="location-selection-coords" id="location-coords"></div>
           </div>
 
           <div class="disclaimer mt-md">
             <span class="disclaimer-icon">ℹ️</span>
-            <span>Click directly on the map if you want to pin a building manually. Orbit the map until the building shape looks right, then use the compass if you need to re-orient north-up.</span>
+            <span>Postcode search may only find the street or postcode centre. Tap the exact building on the satellite map to move the pin before continuing.</span>
           </div>
         </div>
       </div>
@@ -157,6 +160,10 @@ export function init() {
 
   document.getElementById('btn-next-location')?.addEventListener('click', () => {
     window.dispatchEvent(new CustomEvent('wizard:next'));
+  });
+
+  document.getElementById('btn-clear-location')?.addEventListener('click', () => {
+    clearLocationSelection();
   });
 }
 
@@ -218,14 +225,22 @@ async function searchPlaces(query) {
   const requestId = ++searchRequestId;
   searchAbortController?.abort();
   searchAbortController = new AbortController();
-  
+
   try {
-    // Use Nominatim for free geocoding (UK bounded)
+    const suggestions = [];
+    const postcodeSuggestion = await lookupPostcodeSuggestion(query, searchAbortController.signal);
+    if (postcodeSuggestion) {
+      suggestions.push(postcodeSuggestion);
+    }
+
+    // Use Nominatim for free geocoding (UK bounded). It is not a complete house-number
+    // database, so postcode.io above gives a reliable fallback instead of silently
+    // selecting a random nearby house.
     const params = new URLSearchParams({
       q: query,
       format: 'json',
       addressdetails: '1',
-      limit: '5',
+      limit: '8',
       countrycodes: 'gb',
       viewbox: '-8,49,2,61',
       bounded: '1',
@@ -242,37 +257,45 @@ async function searchPlaces(query) {
       return;
     }
 
-    if (data.length === 0) {
-      resultsEl.replaceChildren(createSearchResultMessage('No results found'));
+    data.forEach((place) => {
+      suggestions.push({
+        label: place.display_name,
+        helper: place.type === 'house' || place.addresstype === 'house'
+          ? 'Address match'
+          : 'Map search match — check the pin before continuing',
+        location: createLocationFromPlace(place),
+      });
+    });
+
+    if (suggestions.length === 0) {
+      resultsEl.replaceChildren(createSearchResultMessage('No address found. Try the postcode, then tap the exact building on the map.'));
       resultsEl.classList.remove('hidden');
       return;
     }
 
     const fragment = document.createDocumentFragment();
-    data.forEach((place, i) => {
-      const item = document.createElement('div');
-      item.className = 'search-result-item';
+    suggestions.forEach((suggestion, i) => {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'search-result-item search-result-button';
       item.dataset.idx = String(i);
-      item.textContent = place.display_name;
+      item.innerHTML = `<strong>${escapeTextForLocation(suggestion.label)}</strong><span>${escapeTextForLocation(suggestion.helper)}</span>`;
       fragment.appendChild(item);
     });
 
     resultsEl.replaceChildren(fragment);
-
     resultsEl.classList.remove('hidden');
 
-    // Add click handlers — use mousedown so it fires before blur/outside-click
     resultsEl.querySelectorAll('.search-result-item[data-idx]').forEach(item => {
       item.addEventListener('mousedown', (e) => {
-        e.preventDefault(); // Prevent blur
-        e.stopPropagation(); // Prevent outside-click handler
+        e.preventDefault();
+        e.stopPropagation();
         const idx = parseInt(item.dataset.idx);
-        const place = data[idx];
-        if (!place) return;
-        const location = createLocationFromPlace(place);
-        setLocation(location);
+        const suggestion = suggestions[idx];
+        if (!suggestion?.location) return;
+        setLocation(suggestion.location);
         resultsEl.classList.add('hidden');
-        document.getElementById('location-search').value = location.displayName;
+        document.getElementById('location-search').value = suggestion.location.displayName;
       });
     });
   } catch (err) {
@@ -280,7 +303,64 @@ async function searchPlaces(query) {
       return;
     }
     console.error('Search failed:', err);
+    resultsEl?.replaceChildren(createSearchResultMessage('Search failed. You can still tap the property directly on the map.'));
+    resultsEl?.classList.remove('hidden');
   }
+}
+
+async function lookupPostcodeSuggestion(query, signal) {
+  const postcode = normalizeUkPostcode(query);
+  if (!postcode) return null;
+
+  try {
+    const res = await fetch(`https://api.postcodes.io/postcodes/${encodeURIComponent(postcode)}`, {
+      signal,
+      referrerPolicy: 'no-referrer',
+    });
+
+    if (!res.ok) return null;
+    const payload = await res.json();
+    const result = payload?.result;
+    if (!result || !Number.isFinite(Number(result.latitude)) || !Number.isFinite(Number(result.longitude))) {
+      return null;
+    }
+
+    const outward = [result.admin_district, result.region].filter(Boolean).join(', ');
+    const displayName = `${result.postcode} postcode area${outward ? ` · ${outward}` : ''}`;
+    return {
+      label: displayName,
+      helper: 'Reliable postcode centre — then tap your exact roof if the pin is not on the house',
+      location: createLocationFromPlace({
+        lat: result.latitude,
+        lon: result.longitude,
+        display_name: displayName,
+        address: {
+          postcode: result.postcode,
+          town: result.admin_district,
+          state: result.region,
+          country: 'United Kingdom',
+        },
+      }),
+    };
+  } catch (error) {
+    if (error?.name === 'AbortError') throw error;
+    return null;
+  }
+}
+
+function normalizeUkPostcode(query) {
+  const compact = String(query || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const match = compact.match(/^([A-Z]{1,2}\d[A-Z\d]?)(\d[A-Z]{2})$/);
+  return match ? `${match[1]} ${match[2]}` : null;
+}
+
+function escapeTextForLocation(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
 }
 
 function createSearchResultMessage(message) {
@@ -372,6 +452,34 @@ function setLocation(locationOrLat, lng, displayName, options = {}) {
     duration: 2000,
     essential: true,
   });
+}
+
+
+function clearLocationSelection() {
+  setState({
+    location: null,
+    buildings: [],
+    spaces: [],
+    obstacles: [],
+    sunAnalysis: null,
+    results: null,
+    electricityPricePence: null,
+    selectedSpaceId: null,
+    selectedKit: null,
+    maxVisitedStep: 1,
+  });
+
+  marker?.remove?.();
+  marker = null;
+  document.getElementById('location-info')?.classList.add('hidden');
+  const searchInput = document.getElementById('location-search');
+  if (searchInput) {
+    searchInput.value = '';
+    searchInput.focus();
+  }
+  const nextButton = document.getElementById('btn-next-location');
+  if (nextButton) nextButton.disabled = true;
+  updateLocationGuide();
 }
 
 function updateLocationGuide() {

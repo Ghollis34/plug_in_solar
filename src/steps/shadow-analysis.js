@@ -19,6 +19,7 @@ let isAnimating = false;
 let markers = [];
 let selectedSpaceId = null;
 let mapRuntime = null;
+let shadowMobileView = 'controls';
 
 const mapSession = createMapStepSession();
 
@@ -28,7 +29,7 @@ export function render() {
   const currentMonth = new Date().getMonth();
 
   return `
-    <div class="step-page step-page-map">
+    <div class="step-page step-page-map has-mobile-map-toggle">
       <div class="step-header">
         <div class="section-kicker">Step 4 · Shadows</div>
         <h2 class="step-title">Shadow Analysis</h2>
@@ -40,6 +41,15 @@ export function render() {
         <div class="map-loading-overlay" id="shadow-map-loading">
           <div class="loading-spinner"></div>
           <div id="shadow-map-loading-text">Loading shadow model…</div>
+        </div>
+
+        <div class="placement-mobile-view-toggle" role="group" aria-label="Shadow screen view">
+          <button type="button" class="placement-mobile-view-btn" id="btn-shadow-view-map" data-shadow-view="map" aria-pressed="false">
+            🗺 Full map
+          </button>
+          <button type="button" class="placement-mobile-view-btn active" id="btn-shadow-view-controls" data-shadow-view="controls" aria-pressed="true">
+            Controls
+          </button>
         </div>
 
         <div class="map-overlay-panel map-overlay-panel-shadow">
@@ -220,6 +230,13 @@ function addSpaceMarkers() {
 }
 
 function initControls() {
+  document.querySelectorAll('[data-shadow-view]').forEach((button) => {
+    button.addEventListener('click', () => {
+      setShadowMobileView(button.dataset.shadowView);
+    });
+  });
+  setShadowMobileView('controls', { resizeMap: false });
+
   document.getElementById('time-slider')?.addEventListener('input', () => {
     updateShadows();
   });
@@ -236,6 +253,49 @@ function initControls() {
   document.getElementById('btn-animate')?.addEventListener('click', () => {
     if (isAnimating) stopAnimation();
     else startAnimation();
+  });
+}
+
+
+function setShadowMobileView(view, options = {}) {
+  shadowMobileView = view === 'map' ? 'map' : 'controls';
+
+  const page = document.querySelector('.step-page-map');
+  const isMapMode = shadowMobileView === 'map';
+  page?.classList.toggle('placement-map-mode', isMapMode);
+  document.body.classList.toggle('placement-map-active', isMapMode);
+
+  document.querySelectorAll('[data-shadow-view]').forEach((button) => {
+    const isActive = button.dataset.shadowView === shadowMobileView;
+    button.classList.toggle('active', isActive);
+    button.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+  });
+
+  if (options.resizeMap !== false) {
+    queueShadowMapResize();
+  }
+}
+
+function queueShadowMapResize() {
+  const activeMap = map;
+  if (!activeMap) return;
+
+  window.requestAnimationFrame(() => {
+    try {
+      activeMap?.resize?.();
+      applyMarkerSelectionStyles();
+    } catch (error) {
+      console.warn('Unable to resize shadow map after view toggle:', error);
+    }
+
+    window.requestAnimationFrame(() => {
+      try {
+        activeMap?.resize?.();
+        applyMarkerSelectionStyles();
+      } catch (error) {
+        console.warn('Unable to settle shadow map after view toggle:', error);
+      }
+    });
   });
 }
 
@@ -525,6 +585,10 @@ export function cleanup() {
   markers.forEach((entry) => entry.marker.remove());
   markers = [];
   selectedSpaceId = null;
+  shadowMobileView = 'controls';
+  mapRuntime = null;
+  document.body.classList.remove('placement-map-active');
+
   mapSession.destroy();
   map = null;
 }
