@@ -6,7 +6,7 @@ import {
 } from './referrals.js';
 
 const referralConfig = {
-  disclosure: 'SolarSpot may earn a commission from selected partner links.',
+  disclosure: 'WattPatch may earn a commission from selected partner links.',
   partners: {
     ecoflow: {
       name: 'EcoFlow',
@@ -14,7 +14,7 @@ const referralConfig = {
       allowedHosts: ['uk.ecoflow.com', 'ecoflow.com'],
       defaultLabel: 'View EcoFlow partner offer',
       trackingType: 'url-template',
-      urlTemplate: 'https://uk.ecoflow.com/products/{slug}?utm_source=solarspot&utm_medium=referral&utm_campaign={campaign}',
+      urlTemplate: 'https://uk.ecoflow.com/products/{slug}?utm_source=wattpatch&utm_medium=referral&utm_campaign={campaign}',
     },
     anker: {
       name: 'Anker SOLIX',
@@ -65,8 +65,8 @@ describe('retailer referral links', () => {
     );
 
     expect(link).toMatchObject({
-      url: 'https://uk.ecoflow.com/products/powerstream-microinverter?utm_source=solarspot&utm_medium=referral&utm_campaign=results-primary',
-      destinationUrl: 'https://uk.ecoflow.com/products/powerstream-microinverter?utm_source=solarspot&utm_medium=referral&utm_campaign=results-primary',
+      url: 'https://uk.ecoflow.com/products/powerstream-microinverter?utm_source=wattpatch&utm_medium=referral&utm_campaign=results-primary',
+      destinationUrl: 'https://uk.ecoflow.com/products/powerstream-microinverter?utm_source=wattpatch&utm_medium=referral&utm_campaign=results-primary',
       usesAffiliateLink: true,
       isTrackedRedirect: false,
       partnerId: 'ecoflow',
@@ -86,12 +86,12 @@ describe('retailer referral links', () => {
       {
         referralConfig,
         campaign: 'sticky-cta',
-        redirectBaseUrl: 'https://solarspot.co.uk/r',
+        redirectBaseUrl: 'https://wattpatch.co.uk/r',
       }
     );
 
-    expect(link.url).toBe('https://solarspot.co.uk/r/ecoflow-powerstream-400?campaign=sticky-cta');
-    expect(link.destinationUrl).toBe('https://uk.ecoflow.com/products/powerstream-microinverter?utm_source=solarspot&utm_medium=referral&utm_campaign=sticky-cta');
+    expect(link.url).toBe('https://wattpatch.co.uk/r/ecoflow-powerstream-400?campaign=sticky-cta');
+    expect(link.destinationUrl).toBe('https://uk.ecoflow.com/products/powerstream-microinverter?utm_source=wattpatch&utm_medium=referral&utm_campaign=sticky-cta');
     expect(link.isTrackedRedirect).toBe(true);
     expect(link.usesAffiliateLink).toBe(true);
   });
@@ -126,13 +126,13 @@ describe('retailer referral links', () => {
 
 describe('buildReferralRedirectUrl', () => {
   it('encodes kit id and campaign into a safe redirect URL', () => {
-    expect(buildReferralRedirectUrl('https://solarspot.co.uk/r/', 'ecoflow powerstream/400', 'email launch')).toBe(
-      'https://solarspot.co.uk/r/ecoflow%20powerstream%2F400?campaign=email+launch'
+    expect(buildReferralRedirectUrl('https://wattpatch.co.uk/r/', 'ecoflow powerstream/400', 'email launch')).toBe(
+      'https://wattpatch.co.uk/r/ecoflow%20powerstream%2F400?campaign=email+launch'
     );
   });
 
   it('returns an empty string when the redirect base is not HTTPS', () => {
     expect(buildReferralRedirectUrl('/r', 'ecoflow-powerstream-400', 'results-primary')).toBe('');
-    expect(buildReferralRedirectUrl('http://solarspot.co.uk/r', 'ecoflow-powerstream-400', 'results-primary')).toBe('');
+    expect(buildReferralRedirectUrl('http://wattpatch.co.uk/r', 'ecoflow-powerstream-400', 'results-primary')).toBe('');
   });
 });

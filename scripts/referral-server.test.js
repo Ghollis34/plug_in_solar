@@ -13,7 +13,7 @@ const referrals = {
       allowedHosts: ['uk.ecoflow.com'],
       defaultLabel: 'View EcoFlow partner offer',
       trackingType: 'url-template',
-      urlTemplate: 'https://uk.ecoflow.com/products/{slug}?utm_source=solarspot&utm_medium=referral&utm_campaign={campaign}',
+      urlTemplate: 'https://uk.ecoflow.com/products/{slug}?utm_source=wattpatch&utm_medium=referral&utm_campaign={campaign}',
     },
   },
   kits: {
@@ -47,7 +47,7 @@ describe('resolveReferralDestination', () => {
       kitId: 'ecoflow-powerstream-400',
       partnerId: 'ecoflow',
       partnerName: 'EcoFlow',
-      destinationUrl: 'https://uk.ecoflow.com/products/powerstream-microinverter?utm_source=solarspot&utm_medium=referral&utm_campaign=launch+email',
+      destinationUrl: 'https://uk.ecoflow.com/products/powerstream-microinverter?utm_source=wattpatch&utm_medium=referral&utm_campaign=launch+email',
     });
   });
 

@@ -1,6 +1,6 @@
 # Referral Monetisation and Tracking Plan
 
-SolarSpot is still a static Vite app, so referral monetisation is split into two layers:
+WattPatch is still a static Vite app, so referral monetisation is split into two layers:
 
 1. **Static-safe partner configuration** in `src/data/referrals.json`.
 2. **Optional server-side redirect/tracking** in `scripts/referral-server.mjs` once the app is deployed behind Caddy/Nginx.
@@ -34,8 +34,8 @@ For production, set them to the deployed domain/API routes, for example:
 
 ```json
 {
-  "referralRedirectBaseUrl": "https://solarspot.co.uk/r",
-  "referralTrackingEndpoint": "https://solarspot.co.uk/api/referral-clicks"
+  "referralRedirectBaseUrl": "https://wattpatch.co.uk/r",
+  "referralTrackingEndpoint": "https://wattpatch.co.uk/api/referral-clicks"
 }
 ```
 
@@ -68,8 +68,8 @@ Override paths with environment variables:
 
 ```bash
 PORT=8787 \
-SOLARSPOT_ROOT=/var/www/solarspot/current \
-REFERRAL_LOG_FILE=/var/lib/solarspot/referral-clicks.jsonl \
+WATTPATCH_ROOT=/var/www/wattpatch/current \
+REFERRAL_LOG_FILE=/var/lib/wattpatch/referral-clicks.jsonl \
 npm run referral-server
 ```
 
@@ -78,8 +78,8 @@ npm run referral-server
 When deployed, Caddy can serve the static app and proxy referral/API routes to the Node server:
 
 ```caddyfile
-solarspot.co.uk {
-  root * /var/www/solarspot/current/dist
+wattpatch.co.uk {
+  root * /var/www/wattpatch/current/dist
   encode gzip zstd
 
   reverse_proxy /r/* 127.0.0.1:8787
@@ -97,7 +97,7 @@ solarspot.co.uk {
 Once the referral server is writing events, this endpoint gives a simple count summary:
 
 ```bash
-curl -s https://solarspot.co.uk/api/referrals/summary
+curl -s https://wattpatch.co.uk/api/referrals/summary
 ```
 
 Example response:

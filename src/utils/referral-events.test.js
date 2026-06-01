@@ -2,8 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildReferralClickPayload, trackReferralClick } from './referral-events.js';
 
 const linkInfo = {
-  url: 'https://solarspot.co.uk/r/ecoflow-powerstream-400?campaign=results-primary',
-  destinationUrl: 'https://uk.ecoflow.com/products/powerstream?utm_source=solarspot',
+  url: 'https://wattpatch.co.uk/r/ecoflow-powerstream-400?campaign=results-primary',
+  destinationUrl: 'https://uk.ecoflow.com/products/powerstream?utm_source=wattpatch',
   usesAffiliateLink: true,
   isTrackedRedirect: true,
   partnerId: 'ecoflow',

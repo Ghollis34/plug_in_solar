@@ -1,6 +1,6 @@
-# SolarSpot / Plug-in Solar
+# WattPatch / Plug-in Solar
 
-SolarSpot is a Vite-powered single-page wizard for modelling small UK plug-in solar kits. It guides a homeowner through location lookup, property/site setup, panel placement, shade analysis, kit selection, and a quote-style results page.
+WattPatch is a Vite-powered single-page wizard for modelling small UK plug-in solar kits. It guides a homeowner through location lookup, property/site setup, panel placement, shade analysis, kit selection, and a quote-style results page.
 
 ## What the app does
 
@@ -93,6 +93,8 @@ npm run referral-server
 ```
 
 See `docs/referrals-and-deployment.md` for Caddy routing, summary reporting, and partner account setup.
+
+For a full first-time production rollout, including buying `wattpatch.co.uk` and deploying to Hetzner Cloud, see `docs/hetzner-deployment.md`.
 
 ## Pricing feed
 

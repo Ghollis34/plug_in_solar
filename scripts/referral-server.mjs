@@ -120,7 +120,7 @@ export function createReferralServer({ referrals, kits, logFile }) {
 }
 
 async function main() {
-  const root = resolve(process.env.SOLARSPOT_ROOT || process.cwd());
+  const root = resolve(process.env.WATTPATCH_ROOT || process.env.SOLARSPOT_ROOT || process.cwd());
   const referrals = await readJson(join(root, 'src/data/referrals.json'));
   const kits = await readJson(join(root, 'src/data/kits.json'));
   const logFile = process.env.REFERRAL_LOG_FILE || join(root, 'data/referral-clicks.jsonl');
